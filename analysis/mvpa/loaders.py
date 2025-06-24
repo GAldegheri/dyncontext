@@ -421,3 +421,164 @@ class TrialFilterDataLoader:
             voxel_coords=dataset.voxel_coords,
             affine=dataset.affine
         )
+        
+# Convenience functions
+
+def load_experiment_data(subject_id: str, data_dir: Union[str, Path], 
+                         experiment: int, roi: str) -> Tuple[MVPADataset, MVPADataset]:
+    """
+    Convenience function to load train and test data for an experiment
+    
+    Parameters:
+    -----------
+    subject_id : str
+        Subject identifier
+    data_dir : str or Path
+        Data directory
+    experiment : int
+        Experiment number (1 or 2)
+    roi : str
+        ROI name
+    
+    Returns:
+    --------
+    train_dataset, test_dataset : Tuple[MVPADataset, MVPADataset]
+        Training and test datasets
+    """
+    loader = BetaLoader(data_dir)
+    
+    if experiment == 1:
+        # Experiment 1: view-specific training, congruency-based test
+        train_model = 'view_specific_miniblocks'
+        test_model = 'wide_narrow_congruency_splits'
+    elif experiment == 2:
+        # Experiment 2: shape-based training, omission test
+        train_model = 'wide_narrow_training'
+        test_model = 'wide_narrow'
+    else:
+        raise ValueError(f"Unsupported experiment: {experiment}")
+    
+    train_dataset = loader.load_glm_results(subject_id, 'train', train_model, roi)
+    test_dataset = loader.load_glm_results(subject_id, 'test', test_model, roi)
+    
+    return train_dataset, test_dataset
+
+
+def load_with_voxel_selection(subject_id: str, data_dir: Union[str, Path],
+                              task: str, model_name: str, roi: str,
+                              n_voxels: int, localizer_contrast: str = 'stimulus>baseline') -> MVPADataset:
+    """
+    Load dataset with automatic voxel selection
+    
+    Parameters:
+    -----------
+    subject_id : str
+        Subject identifier
+    data_dir : str or Path
+        Data directory
+    task : str
+        Task name ('train' or 'test')
+    model_name : str
+        GLM model name
+    roi : str
+        ROI name
+    n_voxels : int
+        Number of voxels to select
+    localizer_contrast : str
+        Localizer contrast for voxel selection
+        
+    Returns:
+    --------
+    MVPADataset : Dataset with selected voxels
+    """
+    # Load full dataset
+    loader = BetaLoader(data_dir)
+    dataset = loader.load_glm_results(subject_id, task, model_name, roi)
+    
+    # Load localizer
+    localizer_loader = LocalizerLoader(data_dir)
+    roi_mask_full = loader._load_roi_mask(
+        Path(data_dir) / subject_id / 'roi_masks' / f'{roi}.nii.gz'
+    )
+    localizer_values = localizer_loader.load_localizer_map(
+        subject_id, localizer_contrast, roi_mask_full
+    )
+    
+    # Select voxels
+    voxel_selector = VoxelSelector(localizer_values)
+    voxel_mask = voxel_selector.select_top_voxels(n_voxels)
+    
+    # Return dataset with selected voxels
+    return dataset.select_voxels(voxel_mask)
+
+
+def create_binary_dataset(dataset: MVPADataset, positive_condition: str,
+                          negative_condition: str) -> MVPADataset:
+    """
+    Create binary dataset from multi-condition dataset
+    
+    Parameters:
+    -----------
+    dataset : MVPADataset
+        Input dataset
+    positive_condition : str
+        Condition to label as positive (1)
+    negative_condition : str
+        Condition to label as negative (0)
+        
+    Returns:
+    --------
+    MVPADataset : Binary dataset
+    """
+    
+    # Filter to only include the two conditions
+    mask = np.isin(dataset.labels, [positive_condition, negative_condition])
+    filtered_dataset = dataset.select_samples(mask)
+    
+    # Create binary labels
+    binary_labels = (filtered_dataset.labels == positive_condition).astype(int)
+    
+    # Create new dataset with binary labels
+    return MVPADataset(
+        data=filtered_dataset.data,
+        labels=binary_labels,
+        subject_id=filtered_dataset.subject_id,
+        task=filtered_dataset.task,
+        roi=filtered_dataset.roi,
+        runs=filtered_dataset.runs,
+        splits=filtered_dataset.splits,
+        trial_indices=filtered_dataset.trial_indices,
+        behavior=filtered_dataset.behavior,
+        voxel_coords=filtered_dataset.voxel_coords,
+        affine=filtered_dataset.affine
+    )
+    
+
+def split_by_view(dataset: MVPADataset) -> Tuple[MVPADataset, MVPADataset]:
+    """
+    Split dataset by view (A vs B) based on behavior data
+    
+    Parameters:
+    -----------
+    dataset : MVPADataset
+        Input dataset with behavior data
+        
+    Returns:
+    --------
+    view_a_dataset, view_b_dataset : Tuple[MVPADataset, MVPADataset]
+        Datasets for view A and view B
+    """
+    if dataset.behavior is None:
+        raise ValueError("Behavior data required for view splitting")
+    
+    # Assuming 'initpos' column indicates view (1=A, 2=B)
+    if 'initpos' not in dataset.behavior.columns:
+        raise ValueError("'initpos' column not found in behavior data")
+    
+    view_a_mask = dataset.behavior['initpos'] == 1
+    view_b_mask = dataset.behavior['initpos'] == 2
+    
+    view_a_dataset = dataset.select_samples(view_a_mask.values)
+    view_b_dataset = dataset.select_samples(view_b_mask.values)
+    
+    return view_a_dataset, view_b_dataset
