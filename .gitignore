@@ -1,0 +1,4 @@
+torque/
+*/__pycache__/
+.vscode/
+test_results/
