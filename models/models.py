@@ -2,7 +2,7 @@ import pandas as pd
 from typing import Dict, List, Tuple, Optional, Union
 from dataclasses import dataclass
 from models.trial_filters import TrialFilter, TrainingFilter
-from nipype.interfaces.base import Bunch
+from sklearn.utils import Bunch
 from pathlib import Path
 import logging
 
