@@ -1,5 +1,4 @@
 import pandas as pd
-from nipype.interfaces.base import Bunch
 from typing import Dict, List, Tuple, Optional, Union, Protocol
 import random
 
@@ -128,7 +127,7 @@ class ViewSpecificFilter:
     
     def __init__(self, base_filter: TrialFilter):
         self.base_filter = base_filter
-        
+    
     def get_conditions(self) -> List[str]:
         base_conditions = self.base_filter.get_conditions()
         return [f"A_{cond}" for cond in base_conditions] + [f"B_{cond}" for cond in base_conditions]
@@ -222,7 +221,7 @@ class TrainingFilter(Protocol):
         """Return list of condition names for training"""
         ...
         
-    def process_training_events(self, events: pd.DataFrame) -> Dict[str, Tuple[List[float], List[float]]]:
+    def process_events(self, events: pd.DataFrame) -> Dict[str, Tuple[List[float], List[float]]]:
         """Process events into mini-blocks, return dict mapping conditions to (onsets, durations)"""
         ...
     
@@ -237,7 +236,7 @@ class WideNarrowTrainingFilter:
     def get_conditions(self) -> List[str]:
         return ['wide', 'narrow']
     
-    def process_training_events(self, events: pd.DataFrame) -> Dict[str, Tuple[List[float], List[float]]]:
+    def process_events(self, events: pd.DataFrame) -> Dict[str, Tuple[List[float], List[float]]]:
         """Process events into shape-based mini-blocks"""
         miniblocks = self._create_miniblocks(events)
         
@@ -290,7 +289,7 @@ class WideNarrowTrainingFilter:
                 'widenarr': widenarr
             })
             
-            return pd.DataFrame(miniblocks)
+        return pd.DataFrame(miniblocks)
         
     def generate_contrasts(self) -> Optional[List[Tuple[str, str, List[str], List[float]]]]:
         return [
@@ -305,7 +304,7 @@ class ViewSpecificWideNarrowTrainingFilter:
     def get_conditions(self) -> List[str]:
         return ['A_wide', 'A_narrow', 'B_wide', 'B_narrow']
     
-    def process_training_events(self, events: pd.DataFrame) -> Dict[str, Tuple[List[float], List[float]]]:
+    def process_events(self, events: pd.DataFrame) -> Dict[str, Tuple[List[float], List[float]]]:
         """Process events into view x rotation mini-blocks"""
         miniblocks = self._create_miniblocks(events)
         
@@ -329,28 +328,8 @@ class ViewSpecificWideNarrowTrainingFilter:
         events['rotation'] = events['rotation'].astype(str)
         
         stimonly = events[events['trial_type'] != 'buttonpress'].reset_index(drop=True)
-        mb_length = 18  # Experiment 1 uses 18 events per mini-block
         
-        miniblocks = []
-        
-        for i in range(0, len(stimonly), mb_length):
-            if i + mb_length > len(stimonly):
-                break
-            
-            first_event = stimonly.iloc[i]
-            last_event = stimonly.iloc[i + mb_length - 1]
-            
-            duration = (last_event['onset'] + last_event['duration']) - first_event['onset']
-            
-            miniblocks.append({
-                'onset': first_event['onset'],
-                'duration': duration,
-                'trial_type': first_event['trial_type'],
-                'view': first_event['view'],
-                'rotation': first_event['rotation']
-            })
-        
-        return pd.DataFrame(miniblocks)
+        return stimonly
     
     def generate_contrasts(self) -> Optional[List[Tuple[str, str, List[str], List[float]]]]:
         return None
@@ -363,18 +342,17 @@ class IndividualMiniblockTrainingFilter:
         self.base_filter = base_filter
         
     def get_conditions(self) -> List[str]:
-        # This will be determined dynamically based on number of mini-blocks found
         base_conditions = self.base_filter.get_conditions()
         # For now, assume max 10 mini-blocks per condition (adjust as needed)
         conditions = []
         for base_cond in base_conditions:
-            for i in range(1, 11):  # Assuming max 10 mini-blocks
+            for i in ['1', '2', '...']:  
                 conditions.append(f"{base_cond}_{i}")
         return conditions
     
-    def process_training_events(self, events: pd.DataFrame) -> Dict[str, Tuple[List[float], List[float]]]:
+    def process_events(self, events: pd.DataFrame) -> Dict[str, Tuple[List[float], List[float]]]:
         """Create individual conditions for each mini-block"""
-        base_data = self.base_filter.process_training_events(events)
+        base_data = self.base_filter.process_events(events)
         
         individual_conditions = {}
         
@@ -388,3 +366,15 @@ class IndividualMiniblockTrainingFilter:
     def generate_contrasts(self) -> Optional[List[Tuple[str, str, List[str], List[float]]]]:
         # Individual mini-block models typically don't need contrasts
         return None
+    
+
+class LocalizerFilter:
+    """Filter for functional localizer trials (objects/scrambled vs baseline)"""
+    
+    def __init__(self, localizer_model: str = 'obj_scr_bas'):
+        self.localizer_model = localizer_model
+        
+    def get_conditions(self) -> List[str]:
+        if self.localizer_model == 'obj_scr_bas':
+            return ['objscr', 'baseline', 'buttonpress']
+        

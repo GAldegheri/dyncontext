@@ -1,7 +1,16 @@
 import pandas as pd
 from typing import Dict, List, Tuple, Optional, Union
 from dataclasses import dataclass
-from models.trial_filters import TrialFilter, TrainingFilter
+from models.trial_filters import (
+    TrialFilter, TrainingFilter,
+    WideNarrowFilter,
+    WideNarrowCongruencyFilter,
+    ViewSpecificFilter,
+    TrialSplitter,
+    WideNarrowTrainingFilter,
+    ViewSpecificWideNarrowTrainingFilter,
+    IndividualMiniblockTrainingFilter
+)
 from sklearn.utils import Bunch
 from pathlib import Path
 import logging
@@ -13,8 +22,8 @@ logger = logging.getLogger(__name__)
 class ModelConfig:
     """Global configuration for GLM models"""
     include_button_press: bool = True
-    event_of_interest: int = 6  # Which event number to model (6 = final view)
-    duration_end_event: int = 8  # Event marking end of duration calculation
+    event_of_interest: Optional[int] = None
+    duration_end_event: Optional[int] = None
 
 
 class GLMModel:
@@ -62,7 +71,7 @@ class GLMModel:
             raise NotImplementedError(f"Training model not configured for {self.name}")
         
         # Process events into mini-blocks and get conditions
-        condition_data = self.training_filter.process_training_events(events)
+        condition_data = self.training_filter.process_events(events)
         conditions = list(condition_data.keys())
         
         onsets = []
@@ -160,3 +169,42 @@ class GLMModel:
             return self.training_filter.generate_contrasts()
         else:
             return None
+        
+# Factory functions for models
+
+def create_widenarrow_training_model() -> GLMModel:
+    """Wide/narrow training model (Experiment 2)"""
+    training_filter = WideNarrowTrainingFilter()
+    return GLMModel("wide_narrow_training", training_filter=training_filter)
+
+def create_viewspecific_widenarrow_training_model() -> GLMModel:
+    """View-specific wide/narrow training model (Experiment 1)"""
+    training_filter = ViewSpecificWideNarrowTrainingFilter()
+    return GLMModel("viewspecific_widenarrow_training", training_filter=training_filter)
+
+def create_individual_miniblock_training_model(viewspecific: bool = True) -> GLMModel:
+    """Individual mini-block training model"""
+    if viewspecific:
+        base_filter = ViewSpecificWideNarrowTrainingFilter()
+    else:
+        base_filter = WideNarrowTrainingFilter()
+    
+    training_filter = IndividualMiniblockTrainingFilter(base_filter)
+    return GLMModel("individual_miniblock_training", training_filter=training_filter)
+
+
+def create_widenarrow_test_model() -> GLMModel:
+    """Wide/Narrow test model (Experiment 2)"""
+    test_filter = WideNarrowFilter()
+    training_filter = WideNarrowTrainingFilter()
+    return GLMModel("wide_narrow", test_filter=test_filter, training_filter=training_filter)
+
+def create_exp1_model() -> GLMModel:
+    """Full model with view-specificity and trial splitting"""
+    base_filter = WideNarrowCongruencyFilter()
+    view_filter = ViewSpecificFilter(base_filter)
+    test_splitter = TrialSplitter(view_filter, n_splits=3, 
+                                 split_conditions=['A_wide_congruent', 'A_narrow_congruent',
+                                                 'B_wide_congruent', 'B_narrow_congruent'])
+    training_filter = IndividualMiniblockTrainingFilter(ViewSpecificWideNarrowTrainingFilter())
+    return GLMModel("full_model", test_filter=test_splitter, training_filter=training_filter)
