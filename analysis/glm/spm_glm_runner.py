@@ -1,3 +1,7 @@
+import os
+os.environ.pop("FORCE_SPMMCR", None)
+os.environ.pop("SPMMCRCMD", None)
+
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -6,10 +10,11 @@ import nibabel as nib
 import logging
 import tempfile
 import shutil
-import os
+import sys
 import re
 import scipy.io as spio
 from tqdm import tqdm
+from glob import glob
 
 from nipype import Node, Workflow, IdentityInterface, Function
 from nipype.algorithms import modelgen
@@ -69,8 +74,8 @@ class SPMGLMRunner:
     def __init__(self, 
                  tr: float = 1.0,
                  high_pass: float = 128.0,  # SPM uses cutoff in seconds, not Hz
-                 matlab_cmd: Optional[str] = None,
-                 spm_path: Optional[str] = None,
+                 matlab_cmd: Optional[str] = '/opt/matlab/R2022b/bin/matlab -nojvm -nodisplay',
+                 spm_path: Optional[str] = '/home/common/matlab/spm12',
                  working_dir: Optional[Union[str, Path]] = None):
         """
         Parameters:
@@ -90,7 +95,7 @@ class SPMGLMRunner:
         self.high_pass = high_pass
         self.working_dir = working_dir
         
-        # Set up MATLAB/SPM
+        # Set up MATLAB/SPM - CRITICAL: Must set both MatlabCommand AND SPMCommand paths
         if matlab_cmd:
             MatlabCommand.set_default_matlab_cmd(matlab_cmd)
         if spm_path:
@@ -265,8 +270,9 @@ class SPMGLMRunner:
         modelspec.inputs.output_units = 'secs'
         modelspec.inputs.time_repetition = self.tr
         
-        # Level 1 design
+        # Level 1 design - with potential version checking workaround
         level1design = Node(Level1Design(), name='level1design')
+                
         level1design.inputs.timing_units = 'secs'
         level1design.inputs.interscan_interval = self.tr
         level1design.inputs.flags = {'mthresh': 0.8}
@@ -313,14 +319,15 @@ class SPMGLMRunner:
         # Get SPM.mat file path for parsing
         spm_mat_file = None
         try:
-            spm_mat_file = outputnode.inputs.spm_mat_file
-            if isinstance(spm_mat_file, list):
-                spm_mat_file = spm_mat_file[0]
+            spm_mat_file = datasink.inputs.base_directory + '/betas/SPM.mat'
         except:
             logger.warning("Could not get SPM.mat file path")
+            
+        # Get beta files
+        beta_files = sorted(glob(datasink.inputs.base_directory+'/betas/beta_*.nii'))
         
         # Extract results with proper condition names
-        beta_maps = self._extract_beta_maps(outputnode, spm_mat_file)
+        beta_maps = self._extract_beta_maps(beta_files, spm_mat_file)
         contrast_maps = self._extract_contrast_maps(outputnode) if contrasts else {}
         
         return beta_maps, contrast_maps, spm_mat_file
@@ -439,24 +446,18 @@ class SPMGLMRunner:
             logger.error(f"Failed to parse SPM.mat file {spm_mat_file}: {e}")
             return [], [], []
         
-    def _extract_beta_maps(self, outputnode, spm_mat_file: str = None) -> Dict[str, List[nib.Nifti1Image]]:
+    def _extract_beta_maps(self, beta_files: List[Union[str, Path]], spm_mat_file: str = None) -> Dict[str, List[nib.Nifti1Image]]:
         """Extract beta maps from SPM output with proper condition names"""
         
         beta_maps = {}
         
         try:
-            beta_files = outputnode.inputs.beta_images
-            if not isinstance(beta_files, list):
-                beta_files = [beta_files]
-            
             # If we have SPM.mat file, parse it for proper names
             if spm_mat_file and os.path.exists(spm_mat_file):
                 regressor_names, condition_names, expected_beta_files = self._parse_spm_mat(
                     spm_mat_file, is_fir=False
                 )
                 
-                # Create mapping from beta files to conditions
-                beta_to_condition = {}
                 condition_counters = {}
                 
                 for i, (regressor_name, beta_file) in enumerate(zip(regressor_names, expected_beta_files)):
@@ -500,12 +501,16 @@ class SPMGLMRunner:
             logger.error(f"Failed to extract beta maps: {e}")
         
         # Log summary
+        breakpoint()
         total_betas = sum(len(runs) for runs in beta_maps.values())
         logger.info(f"Extracted {total_betas} beta maps across {len(beta_maps)} conditions:")
         for condition, runs in beta_maps.items():
             logger.info(f"  {condition}: {len(runs)} runs")
         
         return beta_maps
+    
+    def _rename_beta_files(self, beta_dict):
+        return
     
     def _extract_contrast_maps(self, outputnode) -> Dict[str, Dict[str, nib.Nifti1Image]]:
         """Extract contrast maps from SPM output"""
@@ -525,354 +530,3 @@ class SPMGLMRunner:
             logger.warning("Could not extract contrast maps from SPM output")
         
         return contrast_maps
-    
-
-class FIRSPMGLMRunner(SPMGLMRunner):
-    """SPM GLM runner using FIR response function"""
-    
-    def __init__(self, 
-                 fir_length: int = 20,
-                 fir_order: int = 10,
-                 **kwargs):
-        """
-        Parameters:
-        -----------
-        fir_length : int
-            FIR length in seconds
-        fir_order : int
-            Number of FIR time bins
-        **kwargs
-            Additional arguments passed to SPMGLMRunner
-        """
-        super().__init__(**kwargs)
-        
-        self.fir_length = fir_length
-        self.fir_order = fir_order
-        
-        logger.info(f"FIR SPM setup: {fir_length}s length, {fir_order} time bins")
-        
-    def run_subject_glm(self,
-                       subject_id: str,
-                       model: GLMModel,
-                       func_files: List[Union[str, Path]],
-                       events_files: List[Union[str, Path]],
-                       confounds_files: Optional[List[Union[str, Path]]] = None,
-                       behavior_file: Optional[Union[str, Path]] = None,
-                       mask_img: Optional[Union[str, Path]] = None,
-                       output_dir: Optional[Union[str, Path]] = None) -> Dict[str, Dict[str, List[nib.Nifti1Image]]]:
-        """
-        Run FIR SPM GLM for a single subject
-        
-        Returns:
-        --------
-        fir_beta_maps : dict
-            Nested dictionary: {condition: {delay: [beta_maps_per_run]}}
-        """
-        logger.info(f"Running FIR SPM GLM for {subject_id}")
-        
-        # Load behavioral data if needed
-        behavior = None
-        if behavior_file:
-            behavior = pd.read_csv(behavior_file, sep='\t')
-            
-        # Create working directory
-        if self.working_dir is None:
-            work_dir = tempfile.mkdtemp(prefix=f"fir_spm_glm_{subject_id}_")
-        else:
-            work_dir = Path(self.working_dir) / f"fir_spm_glm_{subject_id}"
-            work_dir.mkdir(parents=True, exist_ok=True)
-            work_dir = str(work_dir)
-        
-        try:
-            # Create subject info for each run
-            subj_info = self._create_subject_info(
-                func_files, events_files, confounds_files, model, behavior
-            )
-            
-            # Create workflow
-            workflow_name = f"fir_spm_glm_{subject_id}_{model.name}"
-            wf = Workflow(name=workflow_name)
-            wf.base_dir = work_dir
-            
-            # Set up and run FIR workflow
-            beta_maps, contrast_maps, spm_mat_file = self._setup_and_run_fir_workflow(
-                wf, subj_info, func_files, output_dir, subject_id, model.name
-            )
-            
-            # Reorganize beta maps by delay
-            fir_beta_maps = self._organize_fir_betas(beta_maps)
-            
-            # Save FIR outputs if requested
-            if output_dir:
-                self._save_fir_outputs(fir_beta_maps, subject_id, model.name, output_dir)
-            
-            logger.info(f"FIR SPM GLM completed for {subject_id}")
-            return fir_beta_maps
-            
-        finally:
-            # Clean up working directory if temporary
-            if self.working_dir is None:
-                shutil.rmtree(work_dir, ignore_errors=True)
-                
-    def _setup_and_run_fir_workflow(self,
-                                wf: Workflow,
-                                subj_info: List[Bunch],
-                                func_files: List[Union[str, Path]],
-                                output_dir: Optional[Union[str, Path]],
-                                subject_id: str,
-                                model_name: str) -> Tuple[Dict, Dict, str]:
-        """Set up and run the FIR SPM workflow"""
-        
-        # Input node
-        inputnode = Node(IdentityInterface(fields=['subj_info', 'func_files']), 
-                        name='inputnode')
-        inputnode.inputs.subj_info = subj_info
-        inputnode.inputs.func_files = func_files
-        
-        # SPM model specification
-        modelspec = Node(modelgen.SpecifySPMModel(), name='modelspec')
-        modelspec.inputs.high_pass_filter_cutoff = self.high_pass
-        modelspec.inputs.concatenate_runs = False
-        modelspec.inputs.input_units = 'secs'
-        modelspec.inputs.output_units = 'secs'
-        modelspec.inputs.time_repetition = self.tr
-        
-        # Level 1 design with FIR basis functions
-        level1design = Node(Level1Design(), name='level1design')
-        level1design.inputs.timing_units = 'secs'
-        level1design.inputs.interscan_interval = self.tr
-        level1design.inputs.flags = {'mthresh': 0.8}
-        level1design.inputs.microtime_onset = 6.0
-        level1design.inputs.microtime_resolution = 11
-        level1design.inputs.model_serial_correlations = 'AR(1)'
-        level1design.inputs.volterra_expansion_order = 1
-        
-        # Set FIR basis functions
-        level1design.inputs.bases = {'fir': {'length': self.fir_length, 'order': self.fir_order}}
-        
-        # Model estimation
-        modelest = Node(EstimateModel(), name='modelest')
-        modelest.inputs.estimation_method = {'Classical': 1}
-        modelest.inputs.write_residuals = False
-        
-        # Output node
-        outputnode = Node(IdentityInterface(fields=['beta_images', 'spm_mat_file']), 
-                        name='outputnode')
-        
-        # Connect workflow
-        wf.connect([
-            (inputnode, modelspec, [('subj_info', 'subject_info'),
-                                ('func_files', 'functional_runs')]),
-            (modelspec, level1design, [('session_info', 'session_info')]),
-            (level1design, modelest, [('spm_mat_file', 'spm_mat_file')]),
-            (modelest, outputnode, [('beta_images', 'beta_images'),
-                                ('spm_mat_file', 'spm_mat_file')])
-        ])
-        
-        # Add data sink if output directory specified
-        if output_dir:
-            datasink = self._add_fir_datasink(wf, outputnode, output_dir, subject_id, model_name)
-        
-        # Run workflow
-        logger.info("Running FIR SPM workflow...")
-        wf.run()
-        
-        # Get SPM.mat file path for parsing
-        spm_mat_file = None
-        try:
-            spm_mat_file = outputnode.inputs.spm_mat_file
-            if isinstance(spm_mat_file, list):
-                spm_mat_file = spm_mat_file[0]
-        except:
-            logger.warning("Could not get SPM.mat file path")
-        
-        # Extract results with FIR-specific parsing
-        beta_maps = self._extract_fir_beta_maps(outputnode, spm_mat_file)
-        contrast_maps = {}  # FIR typically doesn't use contrasts
-        
-        return beta_maps, contrast_maps, spm_mat_file
-    
-    def _add_fir_datasink(self, wf, outputnode, output_dir, subject_id, model_name):
-        """Add data sink node for FIR outputs"""
-        
-        datasink = Node(nio.DataSink(parameterization=True), name='datasink')
-        datasink.inputs.base_directory = str(Path(output_dir) / subject_id / f"model_{model_name}_FIR")
-        
-        # Set up substitutions for cleaner filenames
-        subs = [('_modelest0', ''), 
-                (f'_bases_firlength{self.fir_length}.order{self.fir_order}', 'FIR')]
-        
-        datasink.inputs.substitutions = subs
-        
-        wf.connect([
-            (outputnode, datasink, [('beta_images', 'betas'),
-                                   ('spm_mat_file', 'betas.@spm_mat')])
-        ])
-        
-        return datasink
-    
-    def _extract_fir_beta_maps(self, outputnode, spm_mat_file: str = None) -> Dict[str, List[nib.Nifti1Image]]:
-        """Extract FIR beta maps from SPM output with proper condition and delay names"""
-        
-        beta_maps = {}
-        
-        try:
-            beta_files = outputnode.inputs.beta_images
-            if not isinstance(beta_files, list):
-                beta_files = [beta_files]
-            
-            # If we have SPM.mat file, parse it for FIR names
-            if spm_mat_file and os.path.exists(spm_mat_file):
-                regressor_names, condition_names, expected_beta_files = self._parse_spm_mat(
-                    spm_mat_file, is_fir=True
-                )
-                
-                # Create mapping from beta files to conditions with delay info
-                condition_counters = {}
-                
-                for i, (regressor_name, beta_file) in enumerate(zip(regressor_names, expected_beta_files)):
-                    # Skip nuisance regressors
-                    exclude_patterns = ['buttonpress', 'constant', 'tx', 'ty', 'tz', 'rx', 'ry', 'rz', 
-                                      'trans_', 'rot_', 'drift_', 'instruction']
-                    
-                    if any(exclude in regressor_name.lower() for exclude in exclude_patterns):
-                        continue
-                    
-                    # Extract condition and delay info for FIR
-                    if '*bf(' in regressor_name:
-                        base_condition = regressor_name[:regressor_name.find('*bf')]
-                        delay_match = re.search(r'\*bf\((\d+)\)', regressor_name)
-                        delay = int(delay_match.group(1)) - 1 if delay_match else 0
-                        condition_key = f"{base_condition}_delay_{delay:02d}"
-                    else:
-                        condition_key = regressor_name
-                    
-                    # Track run number for this condition
-                    if condition_key not in condition_counters:
-                        condition_counters[condition_key] = 0
-                        beta_maps[condition_key] = []
-                    
-                    # Load beta image if file exists
-                    if os.path.exists(beta_file):
-                        beta_img = nib.load(beta_file)
-                        beta_maps[condition_key].append(beta_img)
-                        condition_counters[condition_key] += 1
-                        
-                        logger.debug(f"Loaded FIR beta: {condition_key} run {condition_counters[condition_key]} "
-                                   f"from {os.path.basename(beta_file)}")
-            
-            else:
-                # Fallback: use generic names if SPM.mat parsing fails
-                logger.warning("SPM.mat not found for FIR, using generic condition names")
-                for i, beta_file in enumerate(beta_files):
-                    condition_name = f"fir_condition_{i+1}"
-                    if condition_name not in beta_maps:
-                        beta_maps[condition_name] = []
-                    beta_maps[condition_name].append(nib.load(beta_file))
-        
-        except Exception as e:
-            logger.error(f"Failed to extract FIR beta maps: {e}")
-        
-        # Log summary
-        total_betas = sum(len(runs) for runs in beta_maps.values())
-        logger.info(f"Extracted {total_betas} FIR beta maps across {len(beta_maps)} conditions:")
-        for condition, runs in beta_maps.items():
-            logger.info(f"  {condition}: {len(runs)} runs")
-        
-        return beta_maps
-    
-    def _organize_fir_betas(self, beta_maps: Dict[str, List[nib.Nifti1Image]]) -> Dict[str, Dict[str, List[nib.Nifti1Image]]]:
-        """Organize FIR beta maps by condition and delay"""
-        
-        fir_betas = {}
-        
-        for beta_name, beta_list in beta_maps.items():
-            # Parse condition names that already include delay info
-            if '_delay_' in beta_name:
-                # Names are already in format: condition_delay_XX
-                base_condition, delay_part = beta_name.split('_delay_')
-                delay_str = delay_part  # Already formatted as XX
-                
-                if base_condition not in fir_betas:
-                    fir_betas[base_condition] = {}
-                
-                if delay_str not in fir_betas[base_condition]:
-                    fir_betas[base_condition][delay_str] = []
-                
-                fir_betas[base_condition][delay_str].extend(beta_list)
-            else:
-                # Handle any conditions without delay info (shouldn't happen in FIR)
-                logger.warning(f"FIR condition without delay info: {beta_name}")
-                if beta_name not in fir_betas:
-                    fir_betas[beta_name] = {}
-                if '00' not in fir_betas[beta_name]:
-                    fir_betas[beta_name]['00'] = []
-                fir_betas[beta_name]['00'].extend(beta_list)
-        
-        # Sort delays numerically within each condition
-        organized_betas = {}
-        for condition in fir_betas:
-            organized_betas[condition] = {}
-            
-            # Sort delays numerically
-            delays = sorted(fir_betas[condition].keys(), 
-                          key=lambda x: int(x) if x.isdigit() else 0)
-            
-            for delay in delays:
-                organized_betas[condition][delay] = fir_betas[condition][delay]
-        
-        logger.info(f"Organized FIR betas for {len(organized_betas)} conditions")
-        for condition, delays in organized_betas.items():
-            logger.info(f"  {condition}: delays {list(delays.keys())}")
-        
-        return organized_betas
-    
-    def _save_fir_outputs(self, 
-                         fir_beta_maps: Dict[str, Dict[str, List[nib.Nifti1Image]]],
-                         subject_id: str,
-                         model_name: str,
-                         output_dir: Union[str, Path]) -> None:
-        """Save FIR outputs with proper delay organization"""
-        
-        output_dir = Path(output_dir) / subject_id / f"model_{model_name}_FIR"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        metadata_rows = []
-        
-        for condition, delay_dict in fir_beta_maps.items():
-            for delay_label, beta_list in delay_dict.items():
-                for run_idx, beta_map in enumerate(beta_list):
-                    # Clean filename with delay label
-                    filename = output_dir / f"beta_{condition}_delay-{delay_label}_run-{run_idx+1:02d}.nii.gz"
-                    beta_map.to_filename(filename)
-                    
-                    # Track metadata
-                    metadata_rows.append({
-                        'condition': condition,
-                        'delay': delay_label,
-                        'delay_tr': int(delay_label),
-                        'delay_seconds': int(delay_label) * self.tr,
-                        'run': run_idx + 1,
-                        'filename': filename.name
-                    })
-        
-        # Save metadata
-        if metadata_rows:
-            metadata_df = pd.DataFrame(metadata_rows)
-            metadata_df.to_csv(output_dir / "fir_beta_metadata.csv", index=False)
-        
-        # Save FIR parameters
-        fir_params = {
-            'runner_type': 'SPM_FIR',
-            'fir_length': self.fir_length,
-            'fir_order': self.fir_order,
-            'tr_seconds': self.tr,
-            'max_delay_tr': self.fir_order - 1,
-            'max_delay_seconds': (self.fir_order - 1) * self.tr
-        }
-        
-        fir_params_df = pd.DataFrame([fir_params])
-        fir_params_df.to_csv(output_dir / "fir_parameters.csv", index=False)
-        
-        logger.info(f"Saved {len(metadata_rows)} FIR beta maps")
-        logger.info(f"FIR output directory: {output_dir}")
