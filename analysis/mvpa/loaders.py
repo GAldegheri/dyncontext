@@ -160,7 +160,7 @@ class BetaLoader:
         """
         # Construct paths
         glm_path = self.data_dir / subject_id / 'glm_results' / f'task-{task}_{model_name}'
-        roi_path = self.data_dir /subject_id / 'roi_masks' / f'{roi_name}.nii.gz'
+        roi_path = self.data_dir /subject_id / 'roi_masks' / f'{roi_name}.nii'
         
         # Load beta maps
         beta_maps, conditions = self._load_beta_maps(glm_path)
@@ -197,7 +197,7 @@ class BetaLoader:
         
     def _load_beta_maps(self, glm_path: Path) -> Tuple[np.ndarray, List[str]]:
         """Load beta maps and condition names"""
-        beta_files = sorted(list(glm_path.glob('beta_*.nii.gz')))
+        beta_files = sorted(list(glm_path.glob('beta_*.nii')))
         conditions_file = glm_path / 'conditions.txt'
         
         if not beta_files:

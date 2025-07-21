@@ -314,7 +314,7 @@ class SPMGLMRunner:
         
         # Run workflow
         logger.info("Running SPM workflow...")
-        wf.run()
+        #wf.run()
         
         # Get SPM.mat file path for parsing
         spm_mat_file = None
@@ -449,7 +449,8 @@ class SPMGLMRunner:
     def _extract_beta_maps(self, beta_files: List[Union[str, Path]], spm_mat_file: str = None) -> Dict[str, List[nib.Nifti1Image]]:
         """Extract beta maps from SPM output with proper condition names"""
         
-        beta_maps = {}
+        beta_dict = {}
+        toremove_files = []
         
         try:
             # If we have SPM.mat file, parse it for proper names
@@ -458,14 +459,13 @@ class SPMGLMRunner:
                     spm_mat_file, is_fir=False
                 )
                 
-                condition_counters = {}
-                
                 for i, (regressor_name, beta_file) in enumerate(zip(regressor_names, expected_beta_files)):
                     # Skip nuisance regressors
                     exclude_patterns = ['buttonpress', 'constant', 'tx', 'ty', 'tz', 'rx', 'ry', 'rz', 
                                       'trans_', 'rot_', 'drift_', 'instruction']
                     
                     if any(exclude in regressor_name.lower() for exclude in exclude_patterns):
+                        toremove_files.append(beta_file)
                         continue
                     
                     # Clean condition name - remove *bf(1) suffix if present
@@ -475,42 +475,39 @@ class SPMGLMRunner:
                         condition_key = regressor_name
                     
                     # Track run number for this condition
-                    if condition_key not in condition_counters:
-                        condition_counters[condition_key] = 0
-                        beta_maps[condition_key] = []
+                    if condition_key not in beta_dict:
+                        beta_dict[condition_key] = []
                     
                     # Load beta image if file exists
                     if os.path.exists(beta_file):
-                        beta_img = nib.load(beta_file)
-                        beta_maps[condition_key].append(beta_img)
-                        condition_counters[condition_key] += 1
-                        
-                        logger.debug(f"Loaded beta: {condition_key} run {condition_counters[condition_key]} "
-                                   f"from {os.path.basename(beta_file)}")
+                        beta_dict[condition_key].append(beta_file)
             
             else:
-                # Fallback: use generic names if SPM.mat parsing fails
-                logger.warning("SPM.mat not found, using generic condition names")
-                for i, beta_file in enumerate(beta_files):
-                    condition_name = f"condition_{i+1}"
-                    if condition_name not in beta_maps:
-                        beta_maps[condition_name] = []
-                    beta_maps[condition_name].append(nib.load(beta_file))
+                logger.error("SPM.mat not found!")
         
         except Exception as e:
             logger.error(f"Failed to extract beta maps: {e}")
         
         # Log summary
-        breakpoint()
-        total_betas = sum(len(runs) for runs in beta_maps.values())
-        logger.info(f"Extracted {total_betas} beta maps across {len(beta_maps)} conditions:")
-        for condition, runs in beta_maps.items():
+        total_betas = sum(len(runs) for runs in beta_dict.values())
+        logger.info(f"Extracted {total_betas} beta maps across {len(beta_dict)} conditions:")
+        for condition, runs in beta_dict.items():
             logger.info(f"  {condition}: {len(runs)} runs")
+            
+        self._rename_beta_files(beta_dict)
+        for f in toremove_files:
+            os.remove(f)
+        os.remove(spm_mat_file)
         
-        return beta_maps
+        breakpoint()
+        return beta_dict
     
-    def _rename_beta_files(self, beta_dict):
-        return
+    def _rename_beta_files(self, beta_dict: Dict):
+        
+        for cond, filelist in beta_dict.items():
+            for i, f in enumerate(filelist):
+                newfilename = os.path.join(os.path.split(f)[0], f'beta-{cond}-run{i+1:02d}.nii')
+                os.rename(f, newfilename)
     
     def _extract_contrast_maps(self, outputnode) -> Dict[str, Dict[str, nib.Nifti1Image]]:
         """Extract contrast maps from SPM output"""
