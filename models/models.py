@@ -172,6 +172,8 @@ class GLMModel:
         
 # Factory functions for models
 
+# Experiment 1
+
 def create_widenarrow_training_model() -> GLMModel:
     """Wide/narrow training model (Experiment 2)"""
     training_filter = WideNarrowTrainingFilter()
@@ -190,7 +192,7 @@ def create_individual_miniblock_training_model(viewspecific: bool = True) -> GLM
         base_filter = WideNarrowTrainingFilter()
     
     training_filter = IndividualMiniblockTrainingFilter(base_filter)
-    return GLMModel("individual_miniblock_training", training_filter=training_filter)
+    return GLMModel("exp1_miniblock_training", training_filter=training_filter)
 
 
 def create_widenarrow_test_model() -> GLMModel:

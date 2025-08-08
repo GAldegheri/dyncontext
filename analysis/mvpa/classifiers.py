@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple, Optional, Union, Literal
+from typing import Literal
 from sklearn.svm import SVC
-from sklearn.model_selection import LeaveOneOut, StratifiedKFold, cross_val_score
+from sklearn.model_selection import LeaveOneOut, StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
 from sklearn.base import clone

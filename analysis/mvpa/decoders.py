@@ -6,7 +6,6 @@ import logging
 
 from analysis.mvpa.base import MVPAAnalysis
 from analysis.mvpa.classifiers import (
-    cross_decode, cross_validate, background_matched_decode,
     TrainTestClassifier, CrossValidationClassifier, ViewSpecificClassifier,
     SplitTrialsClassifier, MetricType
 )
@@ -224,7 +223,9 @@ class Experiment1Decoder(MVPAAnalysis):
         test_backgrounds = {bg: (test_X, test_y) for bg in train_backgrounds.keys()}
         
         # Run background-matched decoding
-        return background_matched_decode(
+        view_classifier = ViewSpecificClassifier()
+        
+        return view_classifier.background_matched_decode(
             train_backgrounds, test_backgrounds, metric=self.metric
         )
         
@@ -279,7 +280,7 @@ class Experiment2Decoder(MVPAAnalysis):
     
     def _select_voxels(self, dataset: MVPADataset, n_voxels: int) -> MVPADataset:
         """Select top N voxels based on localizer"""
-        roi_mask_path = self.data_dir / self.subject_id / 'roi_masks' / f'{self.roi}.nii.gz'
+        roi_mask_path = self.data_dir / self.subject_id / 'roi_masks' / f'{self.roi}.nii'
         loader = BetaLoader(self.data_dir)
         roi_mask = loader._load_roi_mask(roi_mask_path)
         
@@ -306,12 +307,9 @@ class Experiment2Decoder(MVPAAnalysis):
         if train_X is None or test_X is None:
             return {'accuracy': np.nan}
         
-        # Cross-decode
-        result = cross_decode(train_X, train_y, test_X, test_y, metric=self.metric)
+        cross_decoder = TrainTestClassifier()
+        result = cross_decoder.train_test(train_X, train_y,
+                                          test_X, test_y,
+                                          metric=self.metric)
         
-        return {
-            'accuracy': result['score'],
-            'classification_accuracy': result['accuracy'],
-            'n_train': result['n_train'],
-            'n_test': result['n_test']
-        }
+        return result

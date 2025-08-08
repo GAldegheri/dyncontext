@@ -346,7 +346,7 @@ class IndividualMiniblockTrainingFilter:
         # For now, assume max 10 mini-blocks per condition (adjust as needed)
         conditions = []
         for base_cond in base_conditions:
-            for i in ['1', '2', '...']:  
+            for i in ['mb01', 'mb02', '...']:  
                 conditions.append(f"{base_cond}_{i}")
         return conditions
     
@@ -358,7 +358,7 @@ class IndividualMiniblockTrainingFilter:
         
         for base_condition, (onsets, durations) in base_data.items():
             for i, (onset, duration) in enumerate(zip(onsets, durations), 1):
-                condition_name = f"{base_condition}_{i}"
+                condition_name = f"{base_condition}_mb{i:02d}"
                 individual_conditions[condition_name] = ([onset], [duration])
         
         return individual_conditions
@@ -377,4 +377,19 @@ class LocalizerFilter:
     def get_conditions(self) -> List[str]:
         if self.localizer_model == 'obj_scr_bas':
             return ['objscr', 'baseline', 'buttonpress']
+        
+    def process_events(self, events: pd.DataFrame) -> Dict[str, Tuple[List[float], List[float]]]:
+        
+        objscr_evs = events[events['trial_type'].isin(['objects', 'scrambled'])]
+        baseline_evs = events[events['trial_type']=='blank']
+        
+        return {
+            'objscr': (list(objscr_evs['onset']), list(objscr_evs['duration'])),
+            'baseline': (list(baseline_evs['onset']), list(baseline_evs['duration']))
+        }
+        
+    def generate_contrasts(self) -> Optional[List[Tuple[str, str, List[str], List[float]]]]:
+        return [
+            ('objscr>baseline', 'T', ['objscr', 'baseline'], [1.0, -1.0])
+        ]
         

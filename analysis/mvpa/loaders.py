@@ -5,6 +5,7 @@ from pathlib import Path
 import nibabel as nib
 from dataclasses import dataclass
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +24,6 @@ class MVPADataset:
     runs: Optional[np.ndarray] = None  # (n_samples,) - run numbers for CV
     splits: Optional[np.ndarray] = None  # (n_samples,) - trial split numbers
     trial_indices: Optional[np.ndarray] = None  # (n_samples,) - original trial indices
-    
-    # Behavioral data (optional)
-    behavior: Optional[pd.DataFrame] = None
     
     # Coordinate information (optional)
     voxel_coords: Optional[np.ndarray] = None  # (n_features, 3) - voxel coordinates
@@ -74,7 +72,6 @@ class MVPADataset:
             runs=self.runs.copy() if self.runs is not None else None,
             splits=self.splits.copy() if self.splits is not None else None,
             trial_indices=self.trial_indices.copy() if self.trial_indices is not None else None,
-            behavior=self.behavior.copy() if self.behavior is not None else None,
             voxel_coords=new_coords,
             affine=self.affine.copy() if self.affine is not None else None
         )
@@ -90,7 +87,6 @@ class MVPADataset:
             runs=self.runs[sample_mask] if self.runs is not None else None,
             splits=self.splits[sample_mask] if self.splits is not None else None,
             trial_indices=self.trial_indices[sample_mask] if self.trial_indices is not None else None,
-            behavior=self.behavior.iloc[sample_mask].reset_index(drop=True) if self.behavior is not None else None,
             voxel_coords=self.voxel_coords,
             affine=self.affine
         )
@@ -127,6 +123,84 @@ class MVPADataset:
         y = (self.labels[mask] == positive_label).astype(int)
         return X, y
     
+@dataclass
+class BetaCondInfo:
+    """Information about a beta's condition"""
+    path: Path
+    condition: str
+    run: int
+    shape: Optional[str] = None # 'wide' or 'narrow'
+    view: Optional[str] = None # 'A' or 'B'
+    congruency: Optional[str] = None # 'congruent' or 'incongruent'
+    delay: Optional[int] = None # for FIR models
+
+class BetaFilenameParser:
+    def __init__(self):
+        self.patterns = {
+            # Standard pattern: beta_{condition}_run-{run}.nii
+            'standard': re.compile(r'beta_(.+)_run-(\d+)\.nii(?:\.gz)?$'),
+            
+            # FIR pattern: beta_{condition}_delay-{delay}_run-{run}.nii
+            'fir': re.compile(r'beta_(.+)_delay-(\d+)_run-(\d+)\.nii(?:\.gz)?$'),
+            
+            # Alternative pattern: beta_{condition}_run_{run}.nii
+            'alt': re.compile(r'beta_(.+)_run_(\d+)\.nii(?:\.gz)?$'),
+        }
+        
+        # Condition component parsers
+        self.shape_pattern = re.compile(r'\b(wide|narrow)\b', re.IGNORECASE)
+        self.view_pattern = re.compile(r'\b(view[AB])\b', re.IGNORECASE)
+        self.congruency_pattern = re.compile(r'\b(congruent|incongruent)\b', re.IGNORECASE)
+    
+    def parse_filename(self, filepath: Union[str, Path]) -> BetaFileInfo:
+        """Parse beta filename to extract condition and run information"""
+        filepath = Path(filepath)
+        filename = filepath.name
+        
+        # Try different patterns
+        for pattern_name, pattern in self.patterns.items():
+            match = pattern.match(filename)
+            if match:
+                if pattern_name == 'fir':
+                    condition = match.group(1)
+                    delay = int(match.group(2))
+                    run = int(match.group(3))
+                else:
+                    condition = match.group(1)
+                    run = int(match.group(2))
+                    delay = None
+                
+                # Parse condition components
+                shape = self._extract_shape(condition)
+                view = self._extract_view(condition)
+                congruency = self._extract_congruency(condition)
+                
+                return BetaCondInfo(
+                    path=filepath,
+                    condition=condition,
+                    run=run,
+                    shape=shape,
+                    view=view,
+                    congruency=congruency,
+                    delay=delay
+                )
+        
+        raise ValueError(f"Could not parse filename: {filename}")
+    
+    def _extract_shape(self, condition: str) -> Optional[str]:
+        """Extract shape (wide/narrow) from condition string"""
+        match = self.shape_pattern.search(condition)
+        return match.group(1).lower() if match else None
+    
+    def _extract_view(self, condition: str) -> Optional[str]:
+        """Extract view (viewA/viewB) from condition string"""
+        match = self.view_pattern.search(condition)
+        return match.group(1).lower() if match else None
+    
+    def _extract_congruency(self, condition: str) -> Optional[str]:
+        """Extract congruency from condition string"""
+        match = self.congruency_pattern.search(condition)
+        return match.group(1).lower() if match else None
 
 class BetaLoader:
     """
@@ -135,6 +209,7 @@ class BetaLoader:
     
     def __init__(self, data_dir: Union[str, Path]):
         self.data_dir = Path(data_dir)
+        self.parser = BetaFilenameParser()
         
     def load_glm_results(self, subject_id: str, task: str, model_name: str,
                          roi_name: str, localizer_contrast: Optional[str] = None) -> MVPADataset:
@@ -181,7 +256,7 @@ class BetaLoader:
         voxel_coords = self._get_voxel_coordinates(roi_mask)
         
         # Load affine transformation
-        example_beta = nib.load(list(glm_path.glob('beta_*.nii.gz'))[0])
+        example_beta = nib.load(list(glm_path.glob('beta_*.nii'))[0])
         affine = example_beta.affine
         
         return MVPADataset(
@@ -340,87 +415,78 @@ class VoxelSelector:
         return list(range(min_voxels, actual_max + 1, step))
     
 
-class TrialFilterDataLoader:
-    """
-    Loader that integrates with trial filters to create appropriate datasets
-    """
+# class TrialFilterDataLoader:
+#     """
+#     Loader that integrates with trial filters to create appropriate datasets
+#     """
     
-    def __init__(self, beta_loader: BetaLoader):
-        self.beta_loader = beta_loader
+#     def __init__(self, beta_loader: BetaLoader):
+#         self.beta_loader = beta_loader
     
-    def load_filtered_dataset(self, subject_id: str, task: str, model_name: str,
-                              roi_name: str, trial_filter, 
-                              behavior_data: Optional[pd.DataFrame] = None) -> MVPADataset:
-        """
-        Load dataset filtered by trial filter
+#     def load_filtered_dataset(self, subject_id: str, task: str, model_name: str,
+#                               roi_name: str, trial_filter, 
+#                               behavior_data: Optional[pd.DataFrame] = None) -> MVPADataset:
+#         """
+#         Load dataset filtered by trial filter
         
-        Parameters:
-        -----------
-        subject_id : str
-            Subject identifier
-        task : str
-            Task name
-        model_name : str
-            GLM model name
-        roi_name : str
-            ROI name
-        trial_filter : TrialFilter
-            Trial filter to apply
-        behavior_data : pd.DataFrame, optional
-            Behavioral data (if not provided, will try to load)
+#         Parameters:
+#         -----------
+#         subject_id : str
+#             Subject identifier
+#         task : str
+#             Task name
+#         model_name : str
+#             GLM model name
+#         roi_name : str
+#             ROI name
+#         trial_filter : TrialFilter
+#             Trial filter to apply
+#         behavior_data : pd.DataFrame, optional
+#             Behavioral data (if not provided, will try to load)
             
-        Returns:
-        --------
-        MVPADataset : Filtered dataset with appropriate labels
-        """
-        # Load base dataset
-        dataset = self.beta_loader.load_glm_results(subject_id, task, model_name, roi_name)
+#         Returns:
+#         --------
+#         MVPADataset : Filtered dataset with appropriate labels
+#         """
+#         # Load base dataset
+#         dataset = self.beta_loader.load_glm_results(subject_id, task, model_name, roi_name)
         
-        # Use provided behavior data or dataset's behavior data
-        if behavior_data is not None:
-            behavior = behavior_data
-        elif dataset.behavior is not None:
-            behavior = dataset.behavior
-        else:
-            raise ValueError("No behavioral data available for trial filtering")
+#         # Apply trial filter
+#         trial_assignments = trial_filter.filter_trials(behavior)
         
-        # Apply trial filter
-        trial_assignments = trial_filter.filter_trials(behavior)
+#         # Create new labels and data based on trial assignments
+#         new_data_list = []
+#         new_labels_list = []
+#         new_trial_indices_list = []
         
-        # Create new labels and data based on trial assignments
-        new_data_list = []
-        new_labels_list = []
-        new_trial_indices_list = []
-        
-        for condition, trial_indices in trial_assignments.items():
-            if len(trial_indices) > 0:
-                condition_data = dataset.data[trial_indices]
-                condition_labels = [condition] * len(trial_indices)
+#         for condition, trial_indices in trial_assignments.items():
+#             if len(trial_indices) > 0:
+#                 condition_data = dataset.data[trial_indices]
+#                 condition_labels = [condition] * len(trial_indices)
                 
-                new_data_list.append(condition_data)
-                new_labels_list.extend(condition_labels)
-                new_trial_indices_list.extend(trial_indices)
+#                 new_data_list.append(condition_data)
+#                 new_labels_list.extend(condition_labels)
+#                 new_trial_indices_list.extend(trial_indices)
         
-        if not new_data_list:
-            raise ValueError("No trials selected by filter")
+#         if not new_data_list:
+#             raise ValueError("No trials selected by filter")
         
-        # Combine data
-        new_data = np.vstack(new_data_list)
-        new_labels = np.array(new_labels_list)
-        new_trial_indices = np.array(new_trial_indices_list)
+#         # Combine data
+#         new_data = np.vstack(new_data_list)
+#         new_labels = np.array(new_labels_list)
+#         new_trial_indices = np.array(new_trial_indices_list)
         
-        # Create new dataset
-        return MVPADataset(
-            data=new_data,
-            labels=new_labels,
-            subject_id=subject_id,
-            task=task,
-            roi=roi_name,
-            trial_indices=new_trial_indices,
-            behavior=behavior,
-            voxel_coords=dataset.voxel_coords,
-            affine=dataset.affine
-        )
+#         # Create new dataset
+#         return MVPADataset(
+#             data=new_data,
+#             labels=new_labels,
+#             subject_id=subject_id,
+#             task=task,
+#             roi=roi_name,
+#             trial_indices=new_trial_indices,
+#             voxel_coords=dataset.voxel_coords,
+#             affine=dataset.affine
+#         )
         
 # Convenience functions
 
@@ -548,37 +614,36 @@ def create_binary_dataset(dataset: MVPADataset, positive_condition: str,
         runs=filtered_dataset.runs,
         splits=filtered_dataset.splits,
         trial_indices=filtered_dataset.trial_indices,
-        behavior=filtered_dataset.behavior,
         voxel_coords=filtered_dataset.voxel_coords,
         affine=filtered_dataset.affine
     )
     
 
-def split_by_view(dataset: MVPADataset) -> Tuple[MVPADataset, MVPADataset]:
-    """
-    Split dataset by view (A vs B) based on behavior data
+# def split_by_view(dataset: MVPADataset) -> Tuple[MVPADataset, MVPADataset]:
+#     """
+#     Split dataset by view (A vs B) based on behavior data
     
-    Parameters:
-    -----------
-    dataset : MVPADataset
-        Input dataset with behavior data
+#     Parameters:
+#     -----------
+#     dataset : MVPADataset
+#         Input dataset with behavior data
         
-    Returns:
-    --------
-    view_a_dataset, view_b_dataset : Tuple[MVPADataset, MVPADataset]
-        Datasets for view A and view B
-    """
-    if dataset.behavior is None:
-        raise ValueError("Behavior data required for view splitting")
+#     Returns:
+#     --------
+#     view_a_dataset, view_b_dataset : Tuple[MVPADataset, MVPADataset]
+#         Datasets for view A and view B
+#     """
+#     if dataset.behavior is None:
+#         raise ValueError("Behavior data required for view splitting")
     
-    # Assuming 'initpos' column indicates view (1=A, 2=B)
-    if 'initpos' not in dataset.behavior.columns:
-        raise ValueError("'initpos' column not found in behavior data")
+#     # Assuming 'initpos' column indicates view (1=A, 2=B)
+#     if 'initpos' not in dataset.behavior.columns:
+#         raise ValueError("'initpos' column not found in behavior data")
     
-    view_a_mask = dataset.behavior['initpos'] == 1
-    view_b_mask = dataset.behavior['initpos'] == 2
+#     view_a_mask = dataset.behavior['initpos'] == 1
+#     view_b_mask = dataset.behavior['initpos'] == 2
     
-    view_a_dataset = dataset.select_samples(view_a_mask.values)
-    view_b_dataset = dataset.select_samples(view_b_mask.values)
+#     view_a_dataset = dataset.select_samples(view_a_mask.values)
+#     view_b_dataset = dataset.select_samples(view_b_mask.values)
     
-    return view_a_dataset, view_b_dataset
+#     return view_a_dataset, view_b_dataset
