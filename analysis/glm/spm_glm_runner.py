@@ -320,7 +320,7 @@ class SPMGLMRunner:
                         base_condition = regressor_name[:regressor_name.find('*bf')]
                         delay_match = re.search(r'\*bf\((\d+)\)', regressor_name)
                         delay = int(delay_match.group(1)) - 1 if delay_match else 0
-                        condition_key = f"{base_condition}_delay-{delay:02d}"
+                        condition_key = f"{base_condition}_delay{delay:02d}"
                     else:
                         condition_key = regressor_name
                 else:
@@ -379,9 +379,9 @@ class SPMGLMRunner:
             for run_idx, old_file in enumerate(filelist):
                 # Create new filename in output directory
                 if self.use_fir:
-                    new_filename = out_dir / f'beta_{condition}_run-{run_idx+1:02d}.nii'
+                    new_filename = out_dir / f'beta_{condition}_run{run_idx+1:02d}.nii'
                 else:
-                    new_filename = out_dir / f'beta_{condition}_run-{run_idx+1:02d}.nii'
+                    new_filename = out_dir / f'beta_{condition}_run{run_idx+1:02d}.nii'
                 
                 # Copy and rename file
                 if os.path.exists(old_file):
@@ -389,8 +389,8 @@ class SPMGLMRunner:
                     new_beta_dict[condition].append(str(new_filename))
                     
                     # Add to metadata
-                    if self.use_fir and '_delay_' in condition:
-                        base_condition, delay_part = condition.split('_delay_')
+                    if self.use_fir and '_delay' in condition:
+                        base_condition, delay_part = condition.split('_delay')
                         delay_tr = int(delay_part)
                         metadata_rows.append({
                             'condition': base_condition,
