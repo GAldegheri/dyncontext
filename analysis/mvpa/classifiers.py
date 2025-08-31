@@ -7,11 +7,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
 from sklearn.base import clone
 import logging
+import ipdb
 
 logger = logging.getLogger(__name__)
-
-MetricType = Literal['accuracy', 'classifier_information']
-
 
 class LinearClassifier:
     """
@@ -35,6 +33,58 @@ class LinearClassifier:
         self.classifier = None
         self.scaler = None
         self.is_fitted = False
+        
+    def get_params(self, deep=True):
+        """
+        Get parameters for this estimator.
+        Required for scikit-learn compatibility and clone() function.
+        
+        Parameters:
+        -----------
+        deep : bool
+            If True, return parameters for this estimator and contained
+            subobjects that are estimators.
+            
+        Returns:
+        --------
+        params : dict
+            Parameter names mapped to their values.
+        """
+        return {
+            'C': self.C,
+            'kernel': self.kernel,
+            'random_state': self.random_state
+        }
+    
+    def set_params(self, **params):
+        """
+        Set the parameters of this estimator.
+        Required for scikit-learn compatibility and clone() function.
+        
+        Parameters:
+        -----------
+        **params : dict
+            Estimator parameters to set.
+            
+        Returns:
+        --------
+        self : object
+            Returns self.
+        """
+        valid_params = self.get_params().keys()
+        
+        for key, value in params.items():
+            if key not in valid_params:
+                raise ValueError(f"Invalid parameter {key} for estimator {type(self).__name__}. "
+                               f"Valid parameters are: {list(valid_params)}")
+            setattr(self, key, value)
+            
+        # Reset fitted state when parameters change
+        self.is_fitted = False
+        self.classifier = None
+        self.scaler = None
+        
+        return self
         
     def fit(self, X, y):
         """
@@ -65,8 +115,9 @@ class LinearClassifier:
         """Predict class labels"""
         if not self.is_fitted:
             raise ValueError("Classifier not fitted yet")
-            
-        X_scaled = self.scaler.transform(X)
+        
+        test_scaler = StandardScaler() 
+        X_scaled = test_scaler.fit_transform(X)
         return self.classifier.predict(X_scaled)
     
     def decision_function(self, X):
@@ -74,10 +125,11 @@ class LinearClassifier:
         if not self.is_fitted:
             raise ValueError("Classifier not fitted yet")
             
-        X_scaled = self.scaler.transform(X)
+        test_scaler = StandardScaler() 
+        X_scaled = test_scaler.fit_transform(X)
         return self.classifier.decision_function(X_scaled)
     
-    def score(self, X, y, metric: MetricType = 'accuracy'):
+    def score(self, X, y):
         """
         Score the classifier using different metrics
         
@@ -87,48 +139,45 @@ class LinearClassifier:
             Test data
         y : np.ndarray
             True labels
-        metric : str
-            Metric to use ('accuracy', 'classifier_information', 'distance')
             
         Returns:
         --------
-        float : Score according to the specified metric
+        pd.DataFrame : Individual results with columns:
+        - sample_idx, true_label, predicted_label, correct, classifier_info
         """
-        if metric == 'accuracy':
-            return self._compute_accuracy(X, y)
-        elif metric == 'classifier_information':
-            return self._compute_classifier_information(X, y)
-        else:
-            raise ValueError(f"Unknown metric: {metric}")
         
-    def _compute_accuracy(self, X, y):
-        """Compute classification accuracy"""
         predictions = self.predict(X)
-        return accuracy_score(y, predictions)
+        
+        classifier_info = self._compute_classifier_information(X, y)
+        
+        results_df = pd.DataFrame({
+            'sample_idx': range(len(X)),
+            'true_label': y,
+            'predicted_label': predictions,
+            'correct': predictions == y,
+            'classifier_info': classifier_info
+        })
+    
+        return results_df
     
     def _compute_classifier_information(self, X, y):
-        """
-        Compute classifier information based on distance from decision boundary.
-        This is the measure used in the paper.
-        
-        The classifier information is computed as the mean distance from the
-        decision boundary, properly signed according to the true class labels.
-        """
+        # Get raw decision function values
         distances = self.decision_function(X)
         
-        # Convert labels to -1/+1 format for SVM
-        unique_labels = np.unique(y)
-        if len(unique_labels) != 2:
-            raise ValueError("Classifier information requires binary classification")
+        # Normalize by weight norm
+        w_norm = np.linalg.norm(self.classifier.coef_)
+        scaled_distances = distances / w_norm
         
-        # Map labels to -1/+1
-        y_mapped = np.where(y == unique_labels[0], -1, 1)
+        # Z-score the distances
+        zscore_distances = (scaled_distances - np.mean(scaled_distances)) / np.std(scaled_distances)
         
-        # Compute signed distances (positive when prediction matches true label)
-        signed_distances = distances * y_mapped
+        # Identify which label corresponds to negative decision values
+        # (this is the SVM's "negative" class)
+        neg_label = self.classifier.classes_[0]
+        # Flip sign for the negative label so correct predictions are always positive
+        classifier_infos = np.where(y == neg_label, -zscore_distances, zscore_distances)
         
-        # Return mean signed distance (classifier information)
-        return np.mean(signed_distances)
+        return classifier_infos
     
 
 class CrossValidationClassifier:
@@ -151,7 +200,7 @@ class CrossValidationClassifier:
         self.cv_method = cv_method
         self.n_splits = n_splits
         
-    def cross_validate(self, X, y, metric: MetricType = 'classifier_information'):
+    def cross_validate(self, X, y):
         """
         Perform cross-validation
         
@@ -161,8 +210,6 @@ class CrossValidationClassifier:
             Data (n_samples x n_features)
         y : np.ndarray
             Labels
-        metric : str
-            Metric to use for evaluation
             
         Returns:
         --------
@@ -176,26 +223,23 @@ class CrossValidationClassifier:
         else:
             raise ValueError(f"Unknown CV method: {self.cv_method}")
         
-        scores = []
+        all_results = []
         
-        for train_idx, test_idx in cv.split(X, y):
+        for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X, y)):
             X_train, X_test = X[train_idx], X[test_idx]
             y_train, y_test = y[train_idx], y[test_idx]
-        
+            
             # Clone and fit classifier
             clf = clone(self.base_classifier)
             clf.fit(X_train, y_train)
             
-            # Score on test set
-            score = clf.score(X_test, y_test, metric=metric)
-            scores.append(score)
-        
-        return {
-                'mean_score': np.mean(scores),
-                'std_score': np.std(scores),
-                'individual_scores': scores,
-                'metric': metric
-        }
+            fold_results = clf.score(X_test, y_test)
+            fold_results['fold'] = fold_idx
+            fold_results['original_sample_idx'] = test_idx # Map back to original data
+            
+            all_results.append(fold_results)
+            
+        return pd.concat(all_results, ignore_index=True)
         
 
 class TrainTestClassifier:
@@ -213,8 +257,7 @@ class TrainTestClassifier:
         self.base_classifier = base_classifier or LinearClassifier()
         
     
-    def train_test(self, X_train, y_train, X_test, y_test, 
-                   metric: MetricType = 'classifier_information'):
+    def train_test(self, X_train, y_train, X_test, y_test):
         """
         Train on one dataset and test on another
         
@@ -228,8 +271,6 @@ class TrainTestClassifier:
             Test data
         y_test : np.ndarray
             Test labels
-        metric : str
-            Metric to use for evaluation
             
         Returns:
         --------
@@ -240,18 +281,9 @@ class TrainTestClassifier:
         clf.fit(X_train, y_train) 
         
         # Score on test set
-        score = clf.score(X_test, y_test, metric=metric)
+        results_df = clf.score(X_test, y_test)
         
-        # Also compute accuracy for comparison
-        accuracy = clf.score(X_test, y_test, metric='accuracy')
-        
-        return {
-            'score': score,
-            'accuracy': accuracy,
-            'metric': metric,
-            'n_train': len(X_train),
-            'n_test': len(X_test)
-        }
+        return results_df
         
 class ViewSpecificClassifier:
     """
@@ -261,8 +293,7 @@ class ViewSpecificClassifier:
     def __init__(self, base_classifier=None):
         self.base_classifier = base_classifier or LinearClassifier()
         
-    def background_matched_decode(self, train_data_dict, test_data_dict,
-                                  metric: MetricType = 'classifier_information'):
+    def background_matched_decode(self, train_data_dict, test_data_dict):
         """
         Perform background-matched decoding
         
@@ -272,14 +303,12 @@ class ViewSpecificClassifier:
             Dictionary with keys as background types, values as (X, y) tuples
         test_data_dict : dict
             Dictionary with keys as background types, values as (X, y) tuples
-        metric : str
-            Metric to use
             
         Returns:
         --------
         dict : Results averaged across backgrounds
         """
-        background_results = []
+        all_results = []
         
         for background in train_data_dict.keys():
             if background not in test_data_dict:
@@ -291,71 +320,14 @@ class ViewSpecificClassifier:
             
             # Train and test on this background
             classifier = TrainTestClassifier(self.base_classifier)
-            result = classifier.train_test(X_train, y_train, X_test, y_test, metric)
-            result['background'] = background
+            result_df = classifier.train_test(X_train, y_train, X_test, y_test)
+            result_df['background'] = background
             
-            background_results.append(result)
+            all_results.append(result_df)
         
-        if not background_results:
-            return {'mean_score': np.nan, 'backgrounds': []}
-        
-        # Average across backgrounds
-        scores = [r['score'] for r in background_results]
-        accuracies = [r['accuracy'] for r in background_results]
-        
-        return {
-            'mean_score': np.mean(scores),
-            'std_score': np.std(scores),
-            'mean_accuracy': np.mean(accuracies),
-            'individual_scores': scores,
-            'background_results': background_results,
-            'metric': metric
-        }
-      
-  
-class SplitTrialsClassifier:
-    """
-    Classifier that handles trials split into multiple groups
-    (e.g., the splits of congruent trials in Experiment 1)
-    """
-    
-    def __init__(self, base_classifier=None):
-        self.base_classifier = base_classifier or LinearClassifier()
-        
-    def decode_with_splits(self, X_splits, y_splits, X_other, y_other,
-                           metric: MetricType = 'classifier_information'):
-        """
-        Decode split trials against other condition
-        
-        Parameters:
-        -----------
-        X_splits : list of np.ndarray
-            Data for each split
-        y_splits : list of np.ndarray
-            Labels for each split
-        X_other : np.ndarray
-            Data for comparison condition
-        y_other : np.ndarray
-            Labels for comparison condition
-        metric : str
-            Metric to use
+        if not all_results:
+            # Return empty DataFrame with expected columns
+            return pd.DataFrame(columns=['sample_idx', 'true_label', 'predicted_label', 
+                                   'correct', 'classifier_info', 'background'])
             
-        Returns:
-        --------
-        dict : Results averaged across splits
-        """
-        split_results = []
-        
-        for i, (X_split, y_split) in enumerate(zip(X_splits, y_splits)):
-            # Combine split data with other condition
-            X_combined = np.vstack([X_split, X_other])
-            y_combined = np.concatenate([y_split, y_other])
-            
-            classifier = TrainTestClassifier(self.base_classifier)
-            result = classifier.cross_validate(X_combined, y_combined, metric)
-            result['split'] = i + 1
-            
-            split_results.append(result)
-            
-        # Average across splits
-        scores = [r['mean_score'] for r in split_results]
+        return pd.concat(all_results, ignore_index=True)

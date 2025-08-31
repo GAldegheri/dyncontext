@@ -25,6 +25,7 @@ class MVPADataset:
     runs: Optional[np.ndarray] = None  # (n_samples,) - run numbers for CV
     splits: Optional[np.ndarray] = None  # (n_samples,) - trial split numbers
     trial_indices: Optional[np.ndarray] = None  # (n_samples,) - original trial indices
+    delays: Optional[np.ndarray] = None # (n_samples,) delays for time-resolved FIR
     
     # Coordinate information (optional)
     voxel_coords: Optional[np.ndarray] = None  # (n_features, 3) - voxel coordinates
@@ -40,6 +41,9 @@ class MVPADataset:
         
         if self.splits is not None and len(self.splits) != len(self.labels):
             raise ValueError("Splits must have same length as labels")
+        
+        if self.delays is not None and len(self.delays) != len(self.labels):
+            raise ValueError("Delays must have same length as labels")
         
     @property
     def n_samples(self):
@@ -71,6 +75,7 @@ class MVPADataset:
             task=self.task,
             roi=self.roi,
             runs=self.runs.copy() if self.runs is not None else None,
+            delays=self.delays.copy() if self.delays is not None else None,
             splits=self.splits.copy() if self.splits is not None else None,
             trial_indices=self.trial_indices.copy() if self.trial_indices is not None else None,
             voxel_coords=new_coords,
@@ -86,6 +91,7 @@ class MVPADataset:
             task=self.task,
             roi=self.roi,
             runs=self.runs[sample_mask] if self.runs is not None else None,
+            delays=self.delays[sample_mask] if self.delays is not None else None,
             splits=self.splits[sample_mask] if self.splits is not None else None,
             trial_indices=self.trial_indices[sample_mask] if self.trial_indices is not None else None,
             voxel_coords=self.voxel_coords,
@@ -99,6 +105,13 @@ class MVPADataset:
         
         mask = np.isin(self.labels, conditions)
         return self.select_samples(mask)
+    
+    def filter_by_delay(self, delay):
+        if self.delays is not None:
+            mask = self.delays==delay
+            return self.select_samples(mask)
+        else:
+            raise ValueError("Dataset does not have delay information!")           
     
     def get_binary_data(self, positive_label, negative_label):
         """
@@ -130,11 +143,11 @@ class BetaFileInfo:
 class BetaFilenameParser:
     def __init__(self):
         self.patterns = {
-            # Standard pattern: beta_{condition}_run-{run}.nii
-            'standard': re.compile(r'beta_(.+)_run(\d+)\.nii(?:\.gz)?$'),
-            
             # FIR pattern: beta_{condition}_delay-{delay}_run-{run}.nii
-            'fir': re.compile(r'beta_(.+)_delay(\d+)_run(\d+)\.nii(?:\.gz)?$')
+            'fir': re.compile(r'beta_(.+)_delay(\d+)_run(\d+)\.nii(?:\.gz)?$'),
+            
+            # Standard pattern: beta_{condition}_run-{run}.nii
+            'standard': re.compile(r'beta_(.+)_run(\d+)\.nii(?:\.gz)?$')
         }
         
         # Condition component parsers
@@ -159,7 +172,7 @@ class BetaFilenameParser:
                     condition = match.group(1)
                     run = int(match.group(2))
                     delay = None
-                
+                    
                 # Parse condition components
                 shape = self._extract_shape(condition)
                 view = self._extract_view(condition)
@@ -233,7 +246,7 @@ class BetaLoader:
         
     def load_glm_results(self, exp_no: int, subject_id: str, task: str, model_name: str,
                          roi_name: str, localizer: Optional[LocalizerLoader] = None,
-                         n_voxels: Optional[int] = None) -> MVPADataset:
+                         n_voxels: Optional[int] = None, fir: bool = False) -> MVPADataset:
         """
         Load GLM results for a subject
         
@@ -259,6 +272,7 @@ class BetaLoader:
         # Construct paths
         exp_dir = f'experiment_{exp_no}'
         glm_path = self.data_dir / exp_dir / 'derivatives' / 'spm-preproc' / 'derivatives' / 'spm-stats' / 'betas' / subject_id / task / model_name
+        if fir: glm_path = glm_path / 'FIR'
         roi_path = self.data_dir / 'roi_masks' / f'{roi_name}.nii'
         
         beta_files = self._find_beta_files(glm_path)
@@ -278,7 +292,7 @@ class BetaLoader:
             raise ValueError("No valid beta files found")
         
         # Load beta maps and organize
-        beta_maps, labels, runs, file_paths = self._load_and_organize_betas(file_info_list)
+        beta_maps, labels, runs, delays, file_paths = self._load_and_organize_betas(file_info_list)
         
         # Load ROI mask
         roi_mask = self._load_roi_mask(roi_path)
@@ -293,6 +307,8 @@ class BetaLoader:
         # Create runs array if multiple runs
         runs_array = np.array(runs) if len(set(runs)) > 1 else None
         
+        delays_array = np.array(delays) if delays else None
+        
         dataset = MVPADataset(
             data=roi_data,
             labels=np.array(labels),
@@ -300,6 +316,7 @@ class BetaLoader:
             task=task,
             roi=roi_name,
             runs=runs_array,
+            delays=delays_array,
             voxel_coords=voxel_coords,
             affine=affine
         )
@@ -326,6 +343,7 @@ class BetaLoader:
         beta_maps = []
         labels = []
         runs = []
+        delays = []
         file_paths = []
         
         for file_info in sorted(file_info_list, key=lambda x: (x.condition, x.run)):
@@ -336,9 +354,12 @@ class BetaLoader:
             # Store condition and run info
             labels.append(file_info.condition)
             runs.append(file_info.run)
+            delay = file_info.delay
+            if delay:
+                delays.append(delay)
             file_paths.append(file_info.path)
             
-        return np.array(beta_maps), labels, runs, file_paths
+        return np.array(beta_maps), labels, runs, delays, file_paths
     
     def _load_roi_mask(self, roi_path: Path) -> np.ndarray:
         """Load ROI mask"""
@@ -409,7 +430,8 @@ class ExperimentDataLoader:
         
     def load_experiment_1_data(self, subject_id: str, roi: str, 
                                localizer: Optional[LocalizerLoader] = None,
-                               n_voxels: Optional[int] = None) -> Tuple['MVPADataset', 'MVPADataset']:
+                               n_voxels: Optional[int] = None,
+                               fir: bool = False) -> Tuple['MVPADataset', 'MVPADataset']:
         """
         Load data for Experiment 1: view-specific training, congruency, split in 3
         
@@ -426,10 +448,30 @@ class ExperimentDataLoader:
         test_dataset = self.beta_loader.load_glm_results(
             exp_no=1, subject_id=subject_id, task='test', 
             model_name='exp1_full_model', roi_name=roi,
-            localizer=localizer, n_voxels=n_voxels
+            localizer=localizer, n_voxels=n_voxels, fir=fir
         )
         
         return train_dataset, test_dataset
+    
+    def load_experiment_1_testonly(self, subject_id: str, roi: str, 
+                               localizer: Optional[LocalizerLoader] = None,
+                               n_voxels: Optional[int] = None,
+                               fir: bool = False) -> MVPADataset:
+        """
+        Load data for Experiment 1, test only for info. coupling analysis
+        
+        Returns:
+        --------
+        test_dataset : MVPADataset
+        """
+        
+        test_dataset = self.beta_loader.load_glm_results(
+            exp_no=1, subject_id=subject_id, task='test', 
+            model_name='exp1_full_model', roi_name=roi,
+            localizer=localizer, n_voxels=n_voxels, fir=fir
+        )
+        
+        return test_dataset
     
     def load_experiment_2_data(self, subject_id: str, roi: str, 
                                localizer: Optional[LocalizerLoader] = None,
@@ -443,7 +485,7 @@ class ExperimentDataLoader:
         """
         train_dataset = self.beta_loader.load_glm_results(
             exp_no=2, subject_id=subject_id, task='train', 
-            model_name='exp2_wide_narrow_training', roi_name=roi,
+            model_name='exp2_widenarr_training', roi_name=roi,
             localizer=localizer, n_voxels=n_voxels
         )
         test_dataset = self.beta_loader.load_glm_results(
@@ -543,74 +585,29 @@ class ExperimentDataLoader:
         
         return np.array(congruency_labels)
     
+    # BILATERAL SUPPORT METHODS
+    
     def parse_roi_name(self, roi_name: str) -> Tuple[str, Optional[str]]:
-        """
-        Parse ROI name to extract base name and hemisphere
-        
-        Parameters:
-        -----------
-        roi_name : str
-            ROI name (e.g., 'ba-17-18_L', 'ba-17-18', 'LO_R')
-            
-        Returns:
-        --------
-        Tuple[str, Optional[str]] : (base_name, hemisphere)
-            e.g., ('ba-17-18', 'L') or ('ba-17-18', None)
-        """
+        """Parse ROI name to extract base name and hemisphere"""
         if roi_name.endswith('_L') or roi_name.endswith('_R'):
-            base_name = roi_name[:-2]
-            hemisphere = roi_name[-1]
-            return base_name, hemisphere
+            return roi_name[:-2], roi_name[-1]
         else:
             return roi_name, None
-        
+
     def has_bilateral_roi(self, base_roi_name: str) -> bool:
-        """
-        Check if both L and R versions of an ROI exist
-        
-        Parameters:
-        -----------
-        base_roi_name : str
-            Base ROI name without hemisphere suffix
-            
-        Returns:
-        --------
-        bool : True if both L and R versions exist
-        """
+        """Check if both L and R versions of an ROI exist"""
         roi_dir = self.data_dir / 'roi_masks'
-        l_path = roi_dir / f'{base_roi_name}_L.nii'
-        r_path = roi_dir / f'{base_roi_name}_R.nii'
-        
-        return l_path.exists() and r_path.exists()
-    
+        return (roi_dir / f'{base_roi_name}_L.nii').exists() and (roi_dir / f'{base_roi_name}_R.nii').exists()
+
     def load_bilateral_data(self, subject_id: str, base_roi_name: str, experiment: int,
                            localizer: Optional[LocalizerLoader] = None,
                            n_voxels: Optional[int] = None) -> Tuple[Tuple[MVPADataset, MVPADataset], 
                                                                    Tuple[MVPADataset, MVPADataset]]:
-        """
-        Load data for both hemispheres
+        """Load data for both hemispheres"""
+        load_func = self.load_experiment_1_data if experiment == 1 else self.load_experiment_2_data
         
-        Returns:
-        --------
-        Tuple : ((train_L, test_L), (train_R, test_R))
-        """
-        if experiment == 1:
-            load_func = self.load_experiment_1_data
-        elif experiment == 2:
-            load_func = self.load_experiment_2_data
-        else:
-            raise ValueError(f"Unknown experiment: {experiment}")
-        
-        # Load L hemisphere
-        train_L, test_L = load_func(
-            subject_id, f"{base_roi_name}_L", localizer, n_voxels
-        )
-        
-        # Load R hemisphere  
-        train_R, test_R = load_func(
-            subject_id, f"{base_roi_name}_R", localizer, n_voxels
-        )
+        # Load both hemispheres
+        train_L, test_L = load_func(subject_id, f"{base_roi_name}_L", localizer, n_voxels)
+        train_R, test_R = load_func(subject_id, f"{base_roi_name}_R", localizer, n_voxels)
         
         return (train_L, test_L), (train_R, test_R)
-        
-    
