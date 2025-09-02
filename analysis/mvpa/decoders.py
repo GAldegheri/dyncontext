@@ -44,12 +44,17 @@ class Experiment1Decoder:
         --------
         pd.DataFrame with all analysis results
         """
+        
+        print(f"Running Experiment 1 analysis for subject {subject_id}")
+        
         all_results = []
         
         # Parse ROI name to check if bilateral
         base_roi_name, hemisphere = self.experiment_loader.parse_roi_name(self.roi)
         
         for n_voxels in self.voxel_counts:
+            
+            print(f"Running analysis with {n_voxels} voxels")
             
             if hemisphere is None and self.experiment_loader.has_bilateral_roi(base_roi_name):
                 # Bilateral analysis - process each hemisphere separately
@@ -287,6 +292,7 @@ class InfoCouplingDecoder(Experiment1Decoder):
                 
                 train_clean, test_clean = remove_nan_voxels(train_dataset, test_dataset)
                 result_df = self._run_time_resolved_decoding(train_clean, test_clean)
+                result_df['n_voxels'] = n_voxels
                 result_df['roi'] = self.roi
                 result_df['subject_id'] = subject_id
                 
@@ -331,12 +337,17 @@ class Experiment2Decoder:
         """
         Run the complete Experiment 2 analysis with bilateral and bidirectional support
         """
+        
+        print(f"Running Experiment 2 analysis for subject {subject_id}")
+        
         all_results = []
         
         # Parse ROI name to check if bilateral
         base_roi_name, hemisphere = self.experiment_loader.parse_roi_name(self.roi)
         
         for n_voxels in self.voxel_counts:
+            
+            print(f"Running analysis with {n_voxels} voxels")
             
             if hemisphere is None and self.experiment_loader.has_bilateral_roi(base_roi_name):
                 # Bilateral analysis

@@ -1,7 +1,10 @@
 torque/
+slurm/
+test_worker.py
 **/__pycache__/
 .vscode/
 test_results/
 crash-*
 *.m
 glm_results/
+*.csv

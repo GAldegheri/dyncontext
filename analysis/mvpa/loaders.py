@@ -453,7 +453,7 @@ class ExperimentDataLoader:
         
         return train_dataset, test_dataset
     
-    def load_experiment_1_testonly(self, subject_id: str, roi: str, 
+    def load_experiment_1_infocoupling(self, subject_id: str, roi: str, 
                                localizer: Optional[LocalizerLoader] = None,
                                n_voxels: Optional[int] = None,
                                fir: bool = False) -> MVPADataset:
@@ -467,7 +467,7 @@ class ExperimentDataLoader:
         
         test_dataset = self.beta_loader.load_glm_results(
             exp_no=1, subject_id=subject_id, task='test', 
-            model_name='exp1_full_model', roi_name=roi,
+            model_name='exp1_cong_incong_thirds', roi_name=roi,
             localizer=localizer, n_voxels=n_voxels, fir=fir
         )
         
