@@ -37,7 +37,7 @@ def get_font_properties(font_path="./fonts/HelveticaWorld-Regular.ttf"):
 # TFCE Statistics Functions
 # =====================================================================
 
-def get_tfce_stats(data, measure='distance', n_perms=10000, experiment=1):
+def get_tfce_stats(data, measure='classifier_info', n_perms=10000, experiment=1):
     """
     Compute TFCE statistics for either experiment.
     
@@ -46,7 +46,7 @@ def get_tfce_stats(data, measure='distance', n_perms=10000, experiment=1):
     data : pd.DataFrame
         Data containing subject, nvoxels, and optionally expected columns
     measure : str
-        Either 'distance' or 'correct'
+        Either 'classifier_info' or 'correct'
     n_perms : int
         Number of permutations
     experiment : int
@@ -54,10 +54,10 @@ def get_tfce_stats(data, measure='distance', n_perms=10000, experiment=1):
     """
     if experiment == 1:
         # Exp1: Group by subject, nvoxels, and expected
-        grouped_data = data.groupby(['subject', 'nvoxels', 'expected']).mean().reset_index()
+        grouped_data = data.groupby(['subject_id', 'n_voxels', 'congruency']).mean().reset_index()
     else:
         # Exp2: Group by subject and nvoxels only
-        grouped_data = data.groupby(['subject', 'nvoxels']).mean().reset_index()
+        grouped_data = data.groupby(['subject_id', 'n_voxels']).mean().reset_index()
     
     subxvoxels = df_to_array_tfce(grouped_data, measure=measure, experiment=experiment)
     
@@ -94,8 +94,8 @@ def df_to_array_tfce(df, measure='correct', experiment=1):
             
             if experiment == 1:
                 # Exp1: Calculate difference between expected and unexpected
-                exp_val = thisdata[thisdata['expected'] == True][measure].values
-                unexp_val = thisdata[thisdata['expected'] == False][measure].values
+                exp_val = thisdata[thisdata['congruency'] == 'congruent'][measure].values
+                unexp_val = thisdata[thisdata['congruency'] == 'incongruent'][measure].values
                 if len(exp_val) > 0 and len(unexp_val) > 0:
                     subxvoxels[i, j] = exp_val[0] - unexp_val[0]
             else:
@@ -115,8 +115,8 @@ def accs_to_diffs(df, measure='distance'):
     diffs = []
     for nv in df.nvoxels.unique():
         for hemi in df.hemi.unique():
-            for sub in df[(df['nvoxels'] == nv) & (df['hemi'] == hemi)].subject.unique():
-                thissub = df[(df['nvoxels'] == nv) & (df['hemi'] == hemi) & (df['subject'] == sub)]
+            for sub in df[(df['n_voxels'] == nv) & (df['hemi'] == hemi)].subject.unique():
+                thissub = df[(df['n_voxels'] == nv) & (df['hemi'] == hemi) & (df['subject'] == sub)]
                 exp_data = thissub[thissub['expected'] == True][measure].values
                 unexp_data = thissub[thissub['expected'] == False][measure].values
                 if len(exp_data) > 0 and len(unexp_data) > 0:
@@ -130,9 +130,9 @@ def meanbetas_to_diffs(df):
     diffs = []
     for nv in df.nvoxels.unique():
         for hemi in df.hemi.unique():
-            for sub in df[(df['nvoxels'] == nv) & (df['hemi'] == hemi)].subject.unique():
-                thissub = df[(df['nvoxels'] == nv) & (df['hemi'] == hemi) & (df['subject'] == sub)]
-                exp_data = thissub[thissub['condition'] == 'expected']['mean_beta'].values
+            for sub in df[(df['n_voxels'] == nv) & (df['hemisphere'] == hemi)].subject.unique():
+                thissub = df[(df['n_voxels'] == nv) & (df['hemisphere'] == hemi) & (df['subject'] == sub)]
+                exp_data = thissub[thissub['congruency'] == 'expected']['mean_beta'].values
                 unexp_data = thissub[thissub['condition'] == 'unexpected']['mean_beta'].values
                 if len(exp_data) > 0 and len(unexp_data) > 0:
                     thisdiff = exp_data[0] - unexp_data[0]

@@ -367,7 +367,7 @@ class BetaLoader:
             raise FileNotFoundError(f"ROI mask not found: {roi_path}")
         
         roi_img = nib.load(roi_path)
-        return roi_img.get_fdata() > 0
+        return roi_img.get_fdata() > 1e-3
     
     def _extract_roi_data(self, beta_maps: np.ndarray, roi_mask: np.ndarray) -> np.ndarray:
         """Extract data within ROI"""

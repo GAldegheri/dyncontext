@@ -1,7 +1,6 @@
-#!/usr/bin/env python
 """
-Parallel submission of MVPA analysis for Experiment 1
-Submits one job per subject using SLURM
+Parallel submission of information/activation coupling analysis for Experiment 1
+Submits one job per subject (congruent, incongruent) using SLURM
 """
 import argparse
 import sys
@@ -25,10 +24,10 @@ def parse_subjects(subjects_str: str) -> List[str]:
             return [f"sub-{i:03d}" for i in range(start_num, end_num + 1)]
     else:
         return [subjects_str]
-
-def create_job_parameters(experiment: int, subjects: List[str], rois: List[str], 
+    
+def create_job_parameters(subjects: List[str], source_roi: str, 
                          data_dir: str, output_dir: str,
-                         voxel_start: int = 100, voxel_end: int = 6100, 
+                         voxel_start: int = 500, voxel_end: int = 1100, 
                          voxel_step: int = 100) -> List[Dict[str, Any]]:
     """Create parameter combinations for all subject/ROI pairs."""
     param_list = []
@@ -37,40 +36,31 @@ def create_job_parameters(experiment: int, subjects: List[str], rois: List[str],
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     
     for subject in subjects:
-        for roi in rois:
-            output_file = Path(output_dir) / f"exp{experiment:g}_results_{subject}_{roi}.csv"
-            
-            params = {
-                'data_dir': data_dir,
-                'subject': subject,
-                'roi': roi,
-                'output': str(output_file),
-                'voxel_start': voxel_start,
-                'voxel_end': voxel_end,
-                'voxel_step': voxel_step
-            }
-            param_list.append(params)
+        
+        params = {
+            'subject_id': subject,
+            'data_dir': data_dir,
+            'source_roi': source_roi,
+            'output_dir': output_dir,
+            'voxel_start': voxel_start,
+            'voxel_end': voxel_end,
+            'voxel_step': voxel_step
+        }
+        param_list.append(params)
     
     return param_list
 
+
 def main():
     parser = argparse.ArgumentParser(
-        description='Run MVPA analysis in parallel')
-    
-    parser.add_argument('--data_dir', type=str, required=True,
-                       help='Path to data directory')
-    parser.add_argument('--experiment', type=int, required=True,
-                        help='Which experiment to analyze (1 or 2)')
-    parser.add_argument('--subjects', type=str, required=True,
-                       help='Subjects: single (sub-001), comma-separated (sub-001,sub-002), '
-                            'range (sub-001:sub-005)')
-    parser.add_argument('--rois', type=str, required=True,
-                       help='ROIs (comma-separated): ba-17-18,ba-19-37')
-    parser.add_argument('--output_dir', type=str, required=True,
-                       help='Output directory for result files')
+        description='Run information-activation coupling in parallel'
+    )
+    parser.add_argument('--subjects', type=str, required=True, help='Subject identifier')
+    parser.add_argument('--data_dir', type=str, required=True, help='Data directory path')
+    parser.add_argument('--output_dir', default=None, help='Output directory')
     
     # SLURM parameters
-    parser.add_argument('--walltime', type=str, default='04:00:00',
+    parser.add_argument('--walltime', type=str, default='02:00:00',
                        help='Wall time (HH:MM:SS)')
     parser.add_argument('--memory', type=str, default='16G',
                        help='Memory per job')
@@ -82,8 +72,9 @@ def main():
                        help='Max concurrent jobs')
     
     # Optional parameters
-    parser.add_argument('--voxel_start', type=int, default=100)
-    parser.add_argument('--voxel_end', type=int, default=6100)
+    parser.add_argument('--source_roi', type=str, default='ba-17-18', help='Source ROI for multivariate decoding')
+    parser.add_argument('--voxel_start', type=int, default=500)
+    parser.add_argument('--voxel_end', type=int, default=1100)
     parser.add_argument('--voxel_step', type=int, default=100)
     parser.add_argument('--account', type=str, default=None,
                        help='SLURM account (if required)')
@@ -92,26 +83,20 @@ def main():
     
     subjects = parse_subjects(args.subjects)
     
-    # Parse ROIs
-    rois = [roi.strip() for roi in args.rois.split(',')]
-    
     # Validate inputs
     if not Path(args.data_dir).exists():
         print(f"Error: Data directory does not exist: {args.data_dir}")
         sys.exit(1)
-    
+        
     # Show summary
     print(f"Subjects: {len(subjects)}")
-    print(f"ROIs: {len(rois)}")
-    print(f"Total jobs: {len(subjects) * len(rois)}")
     print(f"Output directory: {args.output_dir}")
     
     # Create parameters
     param_list = create_job_parameters(
-        experiment=args.experiment,
         subjects=subjects,
-        rois=rois,
         data_dir=args.data_dir,
+        source_roi=args.source_roi,
         output_dir=args.output_dir,
         voxel_start=args.voxel_start,
         voxel_end=args.voxel_end,
@@ -121,13 +106,11 @@ def main():
     # Submit jobs
     job_manager = JobManager(max_concurrent=args.max_concurrent)
     
-    script_path = f"scripts/run_mvpa_exp{args.experiment:g}.py"
-    
     submitted = job_manager.submit_batch(
-        script_path=script_path,
+        script_path='scripts/run_infocoupling.py',
         param_list=param_list,
-        job_prefix=f"exp{args.experiment:g}_mvpa",
-        pattern=f"exp{args.experiment:g}_mvpa_batch",
+        job_prefix='exp1_infocoupl',
+        pattern='exp1_infocoupl_batch',
         walltime=args.walltime,
         memory=args.memory,
         cpus=args.cpus,
@@ -136,7 +119,6 @@ def main():
     )
     
     print(f"\nSubmitted {submitted} jobs successfully")
-    print(f"Monitor with: squeue -u $USER | grep exp1_mvpa")
-
+    
 if __name__ == '__main__':
     main()

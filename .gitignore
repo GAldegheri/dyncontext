@@ -8,3 +8,5 @@ crash-*
 *.m
 glm_results/
 *.csv
+infocoupl_maps/
+*.nii

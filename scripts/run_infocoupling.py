@@ -7,6 +7,7 @@ and whole-brain univariate activation timeseries.
 import numpy as np
 import pandas as pd
 import nibabel as nib
+from nilearn.image import new_img_like
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import logging
@@ -37,13 +38,12 @@ class InfoCouplingAnalyzer:
         logger.info(f"Running information coupling analysis for {subject_id}")
         
         # Get decoding timeseries for all voxel counts
-        multivar_df = self.decoder.run_complete_analysis(subject_id='sub-001')
+        multivar_df = self.decoder.run_complete_analysis(subject_id=subject_id)
         
         # Load univariate whole-brain data
         wholebrain_dataset = self.loader.load_experiment_1_infocoupling(subject_id=subject_id,
                                                                     roi='wholebrain',
                                                                     fir=True)
-        
         # Collect correlation maps across different voxel counts
         congruent_maps = []
         incongruent_maps = []
@@ -211,31 +211,23 @@ class InfoCouplingAnalyzer:
         nib.Nifti1Image : 3D brain map
         """
         
-        try:
-            wholebrain_mask_path = self.data_dir / 'roi_masks' / 'wholebrain.nii'
-            if wholebrain_mask_path.exists():
-                ref_img = nib.load(wholebrain_mask_path)
-                reference_shape = ref_img.shape
-            else:
-                # Last resort: assume standard MNI dimensions
-                logger.warning("No coordinate info or reference image found, using standard MNI dimensions")
-                reference_shape = (79, 95, 79)  # Standard MNI space dimensions
-        except Exception as e:
-            logger.warning(f"Could not load reference image: {e}, using standard dimensions")
-            reference_shape = (79, 95, 79)
-            
+        wholebrain_mask_path = self.data_dir / 'roi_masks' / 'wholebrain.nii'
+        ref_img = nib.load(wholebrain_mask_path)
+        ref_hdr = ref_img.header.copy()
+        ref_shape = ref_img.shape
+        
         # Initialize brain map with NaNs
-        brain_map = np.full(reference_shape, np.nan)
+        brain_map = np.full(ref_shape, np.nan, dtype=np.float32)
         
         # Map correlations back to brain coordinates
         if wholebrain_dataset.voxel_coords is not None:
             coords = wholebrain_dataset.voxel_coords
             i, j, k = coords[:, 0], coords[:, 1], coords[:, 2]
             
-            # Enxure coordinates are within bounds
-            valid_mask = ((i >= 0) and (i < reference_shape[0]) &
-                          (j >= 0) and (j < reference_shape[1]) &
-                          (k >= 0) and (k < reference_shape[2]))
+            # Ensure coordinates are within bounds
+            valid_mask = ((i >= 0) & (i < ref_shape[0]) & 
+                         (j >= 0) & (j < ref_shape[1]) & 
+                         (k >= 0) & (k < ref_shape[2]))
             
             if np.any(~valid_mask):
                 logger.warning(f"Some coordinates are out of bounds, excluding {np.sum(~valid_mask)} voxels")
@@ -246,9 +238,7 @@ class InfoCouplingAnalyzer:
             logger.warning("No voxel coordinates available, cannot create brain map")
             
         # Create Nifti image
-        affine = wholebrain_dataset.affine if wholebrain_dataset.affine is not None else np.eye(4)
-        
-        return nib.Nifti1Image(brain_map, affine=affine)
+        return nib.Nifti1Image(brain_map, affine=ref_img.affine, header=ref_hdr)
     
     def save_results(self, congruent_map: nib.Nifti1Image, incongruent_map: nib.Nifti1Image,
                      subject_id: str, output_dir: Optional[Path] = None):
@@ -332,17 +322,20 @@ if __name__ == '__main__':
     parser.add_argument('--subject_id', required=True, help='Subject identifier')
     parser.add_argument('--data_dir', required=True, help='Data directory path')
     parser.add_argument('--source_roi', default='ba-17-18', help='Source ROI for multivariate decoding')
-    parser.add_argument('--output_dir', help='Output directory')
-    parser.add_argument('--voxel_counts', nargs='+', type=int, default=None,
-                       help='Voxel counts to use (default: 500-1000 in steps of 100)')
+    parser.add_argument('--output_dir', default=None, help='Output directory')
+    parser.add_argument('--voxel_start', type=int, default=500)
+    parser.add_argument('--voxel_end', type=int, default=1100)
+    parser.add_argument('--voxel_step', type=int, default=100)
     
     args = parser.parse_args()
+    
+    voxel_counts = list(range(args.voxel_start, args.voxel_end, args.voxel_step))
     
     main(
         subject_id=args.subject_id,
         data_dir=args.data_dir, 
         source_roi=args.source_roi,
-        voxel_counts=args.voxel_counts,
+        voxel_counts=voxel_counts,
         output_dir=args.output_dir
     )
         
