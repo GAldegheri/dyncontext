@@ -116,8 +116,6 @@ class LinearClassifier:
         if not self.is_fitted:
             raise ValueError("Classifier not fitted yet")
         
-        #test_scaler = StandardScaler() 
-        #X_scaled = test_scaler.fit_transform(X)
         X_scaled = self.scaler.transform(X)
         return self.classifier.predict(X_scaled)
     
@@ -126,8 +124,6 @@ class LinearClassifier:
         if not self.is_fitted:
             raise ValueError("Classifier not fitted yet")
             
-        #test_scaler = StandardScaler() 
-        #X_scaled = test_scaler.fit_transform(X)
         X_scaled = self.scaler.transform(X)
         return self.classifier.decision_function(X_scaled)
     

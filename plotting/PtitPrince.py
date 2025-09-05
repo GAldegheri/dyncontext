@@ -14,21 +14,139 @@ import warnings
 
 import seaborn as sns
 
-#from seaborn.external.six import string_types
-#from seaborn.external.six.moves import range
-
 from seaborn import utils
-from seaborn._core import categorical_order
 from scipy.stats import iqr
 from seaborn.utils import remove_na
 from seaborn.algorithms import bootstrap
 from seaborn.palettes import color_palette, husl_palette, light_palette, dark_palette
-from seaborn.axisgrid import FacetGrid, _facet_docs
+from seaborn.axisgrid import FacetGrid
 
-from seaborn.categorical import *
-from seaborn.categorical import _CategoricalPlotter, _CategoricalScatterPlotter,  _categorical_docs
+# Try to import from new seaborn structure, fall back to custom implementation
+try:
+    from seaborn.categorical import _CategoricalPlotter, _CategoricalScatterPlotter
+except ImportError:
+    # For seaborn >= 0.12, we need to implement these ourselves
+    from seaborn._base import categorical_order
+    
+    class _CategoricalPlotter:
+        """Minimal implementation of categorical plotter base class."""
+        
+        def establish_variables(self, x, y, hue, data, orient, order, hue_order):
+            """Extract and organize the data for plotting."""
+            # Determine orientation
+            if orient is None:
+                if x is None:
+                    orient = "h"
+                elif y is None:
+                    orient = "v"
+                else:
+                    # Try to infer orientation
+                    try:
+                        x_data = data[x] if data is not None and x in data else x
+                        y_data = data[y] if data is not None and y in data else y
+                        x_numeric = np.issubdtype(np.array(x_data).dtype, np.number) if x_data is not None else False
+                        y_numeric = np.issubdtype(np.array(y_data).dtype, np.number) if y_data is not None else False
+                        if y_numeric and not x_numeric:
+                            orient = "v"
+                        elif x_numeric and not y_numeric:
+                            orient = "h"
+                        else:
+                            orient = "v"
+                    except:
+                        orient = "v"
+            
+            self.orient = orient
+            
+            # Set up the data
+            if orient == "v":
+                self.group_names = categorical_order(data[x] if data is not None else x, order)
+                self.plot_data = [data[data[x] == g][y].values if data is not None else [] 
+                                  for g in self.group_names]
+            else:
+                self.group_names = categorical_order(data[y] if data is not None else y, order)
+                self.plot_data = [data[data[y] == g][x].values if data is not None else [] 
+                                  for g in self.group_names]
+            
+            # Handle hue variable
+            if hue is not None and data is not None:
+                hue_data = data[hue]
+                self.hue_names = categorical_order(hue_data, hue_order)
+                
+                if orient == "v":
+                    self.plot_hues = [data[data[x] == g][hue].values for g in self.group_names]
+                else:
+                    self.plot_hues = [data[data[y] == g][hue].values for g in self.group_names]
+                    
+                # Set up hue offsets for dodging
+                n_levels = len(self.hue_names)
+                each_width = 0.8 / n_levels
+                offsets = np.linspace(0, 0.8 - each_width, n_levels)
+                offsets -= offsets.mean()
+                self.hue_offsets = offsets
+            else:
+                self.hue_names = None
+                self.plot_hues = None
+                self.hue_offsets = None
+        
+        def establish_colors(self, color, palette, saturation):
+            """Set up the color palette."""
+            if self.hue_names is None:
+                n_colors = len(self.group_names)
+            else:
+                n_colors = len(self.hue_names)
+            
+            if color is not None:
+                self.colors = [color] * n_colors
+            elif palette is not None:
+                self.colors = color_palette(palette, n_colors)
+            else:
+                self.colors = color_palette(n_colors=n_colors)
+            
+            # Apply saturation
+            self.colors = [mpl.colors.rgb_to_hsv(mpl.colors.to_rgb(c)) for c in self.colors]
+            for i, c in enumerate(self.colors):
+                c[1] = c[1] * saturation
+                self.colors[i] = mpl.colors.hsv_to_rgb(c)
+            
+            self.gray = (0.5, 0.5, 0.5)
+            
+            # Set up point colors for scatter plots
+            if self.hue_names is None:
+                self.point_colors = [[i] * len(data) for i, data in enumerate(self.plot_data)]
+            else:
+                self.point_colors = []
+                for i, group_data in enumerate(self.plot_data):
+                    point_colors = []
+                    if self.plot_hues is not None:
+                        for val in self.plot_hues[i]:
+                            if val in self.hue_names:
+                                point_colors.append(self.hue_names.index(val))
+                            else:
+                                point_colors.append(0)
+                    self.point_colors.append(point_colors)
+        
+        def add_legend_data(self, ax, color=None, label=None):
+            """Add data for legend creation."""
+            if color is not None and label is not None:
+                # Add a dummy artist for legend
+                ax.plot([], [], color=color, label=label)
+        
+        def annotate_axes(self, ax):
+            """Add labels and ticks to the axes."""
+            if self.orient == "v":
+                ax.set_xticks(range(len(self.group_names)))
+                ax.set_xticklabels(self.group_names)
+                ax.set_xlim(-0.5, len(self.group_names) - 0.5)
+            else:
+                ax.set_yticks(range(len(self.group_names)))
+                ax.set_yticklabels(self.group_names)
+                ax.set_ylim(-0.5, len(self.group_names) - 0.5)
+    
+    class _CategoricalScatterPlotter(_CategoricalPlotter):
+        """Minimal implementation of categorical scatter plotter."""
+        pass
 
-__all__ = [ "half_violinplot", "stripplot", "RainCloud"]
+__all__ = ["half_violinplot", "stripplot", "RainCloud"]
 __version__ = '0.2.5'
 
 # ---------------------------------------------------------------------------------
@@ -68,13 +186,15 @@ class _StripPlotter(_CategoricalScatterPlotter):
             if self.plot_hues is None or not self.dodge:
 
                 if self.hue_names is None:
-                    hue_mask = np.ones(group_data.size, np.bool)
+                    hue_mask = np.ones(group_data.size, bool)
                 else:
                     hue_mask = np.array([h in self.hue_names
-                                         for h in self.plot_hues[i]], np.bool)
+                                         for h in self.plot_hues[i]], bool)
 
                 strip_data = group_data[hue_mask]
-                point_colors = np.asarray(self.point_colors[i][hue_mask])
+                # Convert to numpy array before boolean indexing
+                point_colors_array = np.asarray(self.point_colors[i])
+                point_colors = point_colors_array[hue_mask]
 
                 # Plot the points in centered positions
                 cat_pos = self.move + np.ones(strip_data.size) * i
@@ -92,7 +212,9 @@ class _StripPlotter(_CategoricalScatterPlotter):
                     hue_mask = self.plot_hues[i] == hue_level
                     strip_data = group_data[hue_mask]
 
-                    point_colors = np.asarray(self.point_colors[i][hue_mask])
+                    # Convert to numpy array before boolean indexing
+                    point_colors_array = np.asarray(self.point_colors[i])
+                    point_colors = point_colors_array[hue_mask]
                     # Plot the points in centered positions
                     center = i + offsets[j]
                     cat_pos = self.move + np.ones(strip_data.size) * center
@@ -386,8 +508,8 @@ class _Half_ViolinPlotter(_CategoricalPlotter):
 
                 # Handle special case of a single observation
                 elif support.size == 1:
-                    val = np.asscalar(support)
-                    d = np.asscalar(density)
+                    val = np.asscalar(support) if hasattr(np, 'asscalar') else support.item()
+                    d = np.asscalar(density) if hasattr(np, 'asscalar') else density.item()
                     self.draw_single_observation(ax, i, val, d)
                     continue
 
@@ -402,7 +524,7 @@ class _Half_ViolinPlotter(_CategoricalPlotter):
                               edgecolor=self.gray,
                               **kws)
                     if self.CI:
-                        CI95 = pg.ttest(group_data, 0.0)['CI95%'][0]
+                        CI95 = pg.ttest(group_data, 0.0)['CI95%'].iloc[0]
                         supp95 = np.arange(CI95[0], CI95[1], 0.01)
                         ind95 = [find_nearest(support, v)[0] for v in supp95]
                         fill_func(np.clip(support[ind95], CI95[0], CI95[1]), #supp95,
@@ -420,7 +542,7 @@ class _Half_ViolinPlotter(_CategoricalPlotter):
                               **kws)
                     if self.CI:
                         #ipdb.set_trace()
-                        CI95 = pg.ttest(group_data, 0.0)['CI95%'][0]
+                        CI95 = pg.ttest(group_data, 0.0)['CI95%'].iloc[0]
                         supp95 = np.arange(CI95[0], CI95[1], 0.01)
                         ind95 = [find_nearest(support, v)[0] for v in supp95]
                         #ipdb.set_trace()
@@ -474,8 +596,8 @@ class _Half_ViolinPlotter(_CategoricalPlotter):
 
                     # Handle the special case where we have one observation
                     elif support.size == 1:
-                        val = np.asscalar(support)
-                        d = np.asscalar(density)
+                        val = np.asscalar(support) if hasattr(np, 'asscalar') else support.item()
+                        d = np.asscalar(density) if hasattr(np, 'asscalar') else density.item()
                         if self.split:
                             d = d / 2
                         at_group = i + offsets[j]

@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Set
+from config.paths import HOME_DIR
 
 # Global job tracking
 _submitted_jobs: Set[str] = set()
@@ -93,7 +94,7 @@ def create_job_script(script_path: str, args_str: str, script_name: str,
         file.write('echo "SLURM_JOB_ID: $SLURM_JOB_ID"\n')
         file.write('echo "SLURM_JOB_NAME: $SLURM_JOB_NAME"\n')
         file.write("\n# Change to analysis directory\n")
-        file.write("cd /project/3018040.05/dyncontext/\n")
+        file.write(f"cd {HOME_DIR}\n")
         file.write("\n# Activate conda environment\n")
         file.write("source activate dyncontext\n")
         file.write("\n# Run the Python script\n")

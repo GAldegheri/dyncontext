@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Set
+from config.paths import HOME_DIR
 
 # Global job tracking
 _submitted_jobs: Set[str] = set()
@@ -62,7 +63,7 @@ def create_job_script(script_path: str, args_str: str, script_name: str,
         file.write(f"#PBS -o torque/jobs/output/{job_basename}_output.txt\n")
         file.write(f"#PBS -e torque/jobs/output/{job_basename}_error.txt\n")
         file.write("# Change to analysis directory\n")
-        file.write("cd /project/3018040.05/dyncontext/\n")
+        file.write(f"cd {HOME_DIR}\n")
         file.write("# Activate conda environment\n")
         file.write("source activate dyncontext\n")
         file.write("# Log start time\n")
