@@ -1,0 +1,13 @@
+ipdb==0.13.13
+matplotlib==3.10.6
+mne==1.10.1
+nibabel==5.3.2
+nilearn==0.12.1
+nipype==1.11.0.dev0
+numpy==2.3.2
+pandas==2.3.2
+pingouin==0.5.5
+scikit_learn==1.7.1
+scipy==1.16.1
+seaborn==0.13.2
+tqdm==4.67.1
