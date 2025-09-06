@@ -6,6 +6,7 @@ Eliminates code duplication while maintaining experiment-specific functionality
 import numpy as np
 import pingouin as pg
 import pandas as pd
+from scipy.stats import pearsonr
 import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
@@ -260,7 +261,7 @@ def draw_hemisphere_violins(ax, data, measure, nsubjs, fontprop, fixed_ylim=True
 # Main Plotting Function
 # =====================================================================
 
-def plot_by_nvoxels(data, measure='classifier_info', tfce_pvals=None, right_part=True, 
+def plot_by_nvoxels(data, measure='classifier_info', tfce_pvals=None, violin_plot=True, 
                    n_perms=10000, fixed_ylim=True, experiment=1):
     """
     Main plotting function for both experiments.
@@ -273,8 +274,8 @@ def plot_by_nvoxels(data, measure='classifier_info', tfce_pvals=None, right_part
         'classifier_info' or 'correct'
     tfce_pvals : array-like or None
         Pre-computed TFCE p-values
-    right_part : bool
-        Whether to include hemisphere comparison
+    violin_plot : bool
+        Whether to include violin plot of individual averages
     n_perms : int
         Number of permutations for TFCE
     fixed_ylim : bool
@@ -284,7 +285,7 @@ def plot_by_nvoxels(data, measure='classifier_info', tfce_pvals=None, right_part
     """
     fontprop = get_font_properties()
     
-    if right_part:
+    if violin_plot:
         assert 'hemisphere' in data.columns
     assert data.roi.nunique() == 1
     
@@ -319,7 +320,7 @@ def plot_by_nvoxels(data, measure='classifier_info', tfce_pvals=None, right_part
     
     # Main plot
     with sns.axes_style('white'):
-        ax0 = fig.add_subplot(gs[1:3, 1:] if right_part else gs[1:3, :])
+        ax0 = fig.add_subplot(gs[1:3, 1:] if violin_plot else gs[1:3, :])
         
         # Plot lines based on experiment
         if experiment == 1:
@@ -367,7 +368,7 @@ def plot_by_nvoxels(data, measure='classifier_info', tfce_pvals=None, right_part
         add_significance_markers(ax0, tfce_pvals, np.arange(100, 6100, 100), plot_config, experiment)
     
     # Hemisphere comparison plot (if requested)
-    if right_part:
+    if violin_plot:
         with sns.axes_style('white'):
             ax1 = fig.add_subplot(gs[:, 0])
             
@@ -431,20 +432,17 @@ def add_significance_markers(ax, tfce_pvals, xticks, config, experiment):
     
     for x in np.arange(0, len(tfce_pvals)):
         if experiment == 1:
-            # Exp1: Two levels of significance
             if tfce_pvals[x] < 0.01:
-                ax.scatter(xticks[x], markers[0], marker=(6, 2, 0), color='k', linewidths=3.)
-                ax.scatter(xticks[x], markers[1], marker=(6, 2, 0), color='k', linewidths=3.)
+                ax.scatter(xticks[x], markers[0], marker=(6, 2, 0), color='k', linewidths=2.)
+                ax.scatter(xticks[x], markers[1], marker=(6, 2, 0), color='k', linewidths=2.)
             elif tfce_pvals[x] < 0.05:
-                ax.scatter(xticks[x], markers[0], marker=(6, 2, 0), s=180, color='k', linewidths=3.)
+                ax.scatter(xticks[x], markers[0], marker=(6, 2, 0), s=180, color='k', linewidths=2.)
         else:
-            # Exp2: Three levels of significance
-            if tfce_pvals[x] < 0.001:
-                for pos in markers:
-                    ax.scatter(xticks[x], pos, marker=(6, 2, 0), s=180, color='k', linewidths=2.)
-            elif tfce_pvals[x] < 0.01:
-                for pos in markers[:2]:
-                    ax.scatter(xticks[x], pos, marker=(6, 2, 0), s=180, color='k', linewidths=2.)
+            if tfce_pvals[x] < 0.01:
+                ax.scatter(xticks[x], markers[0], marker=(6, 2, 0), s=180, color='k', linewidths=2.)
+                ax.scatter(xticks[x], markers[1], marker=(6, 2, 0), s=180, color='k', linewidths=2.)
+            elif tfce_pvals[x] < 0.05:
+                ax.scatter(xticks[x], markers[0], marker=(6, 2, 0), s=180, color='k', linewidths=2.)
 
 
 # =====================================================================
@@ -653,3 +651,54 @@ def pretty_behav_plot(avgdata, measure='Hit', excl=True, fname=None, saveimg=Fal
         plt.savefig(os.path.join('results_plots', fname))
     else:
         plt.show()
+        
+def draw_counts_correlations(countsdata):
+    """Draw a whisker plot of correlations between estimated and real number of reappearances (exp. 2)"""
+    
+    fontprop = get_font_properties()
+    
+    corrs = []
+    to_exclude = []
+    for s in countsdata.subject.unique():
+        thissub = countsdata[countsdata.subject==s]
+        corr = pearsonr(thissub['count'], thissub['targets'])[0]
+        corrs.append(corr)
+        
+    # Compute inter-quartile range (IQR)
+    q1 = np.quantile(corrs, 0.25)
+    q3 = np.quantile(corrs, 0.75)
+    iqr = q3 - q1
+    
+    # exclude correlations below 1st quartile - 2 IQRs
+    to_exclude = [i+1 for i, c in enumerate(corrs) if c < q1 - 2 * iqr]
+    
+    overallcounts = countsdata.groupby(['subject']).sum().reset_index().drop(columns=['run'])
+    overallcounts['correlation'] = corrs
+    
+    fig = plt.figure(figsize=(5,8))
+    with sns.axes_style('white'):
+        ax1 = fig.add_subplot()
+        sns.stripplot(y='correlation', data=overallcounts[~overallcounts['subject'].isin(to_exclude)],
+                    jitter=0.08, color='black', size=8, alpha=.5)
+        sns.stripplot(y='correlation', data=overallcounts[overallcounts['subject'].isin(to_exclude)],
+                    jitter=0.08, color='red', size=8, alpha=1.)
+        sns.boxplot(y='correlation', data=overallcounts, width=0.6, whis=2., 
+                    linewidth=2., saturation=1, fliersize=0, color='white',
+                    medianprops=dict(color='black', alpha=1.),
+                    boxprops=dict(edgecolor='black'), whiskerprops=dict(color='black', alpha=1.),
+                    capprops=dict(color='black', alpha=1.))
+        # Get mean and 95% CI:
+        meanerr = overallcounts['correlation'].median()
+        tstats = pg.ttest(overallcounts['correlation'], 0.0)
+        ci95 = tstats['CI95%'].iloc[0]
+        plt.yticks(font=fontprop.get_name(), fontsize=24) 
+        ax1.set_ylabel('Correlation (Pearson\'s r)', font=fontprop.get_name(), fontsize=28)
+        ax1.axes_style = 'white'
+        ax1.spines['top'].set_visible(False)
+        ax1.spines['right'].set_visible(False)
+        ax1.spines['bottom'].set_visible(False)
+        ax1.spines['left'].set_linewidth(2)
+        ax1.axhline(0.0, color='k', linestyle='--', linewidth=2.)
+    
+    plt.tight_layout()
+    plt.show()
